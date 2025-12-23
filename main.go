@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,35 @@ import (
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/render"
 )
+
+// JSON output structures
+type JSONOutput struct {
+	Root        string         `json:"root"`
+	TotalTokens int            `json:"total_tokens"`
+	TotalDocs   int            `json:"total_docs"`
+	Documents   []JSONDocument `json:"documents"`
+}
+
+type JSONDocument struct {
+	Filename   string        `json:"filename"`
+	Tokens     int           `json:"tokens"`
+	Sections   []JSONSection `json:"sections"`
+	References []JSONRef     `json:"references,omitempty"`
+}
+
+type JSONSection struct {
+	Level    int           `json:"level"`
+	Title    string        `json:"title"`
+	Tokens   int           `json:"tokens"`
+	KeyTerms []string      `json:"key_terms,omitempty"`
+	Children []JSONSection `json:"children,omitempty"`
+}
+
+type JSONRef struct {
+	Text   string `json:"text"`
+	Target string `json:"target"`
+	Line   int    `json:"line"`
+}
 
 var version = "dev"
 
@@ -36,6 +66,7 @@ func main() {
 	var sectionFilter string
 	var expandSection string
 	var showRefs bool
+	var jsonMode bool
 	for i := 2; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--section", "-s":
@@ -50,6 +81,8 @@ func main() {
 			}
 		case "--refs", "-r":
 			showRefs = true
+		case "--json", "-j":
+			jsonMode = true
 		}
 	}
 
@@ -67,7 +100,10 @@ func main() {
 			fmt.Println("No markdown files found")
 			os.Exit(1)
 		}
-		if showRefs {
+		if jsonMode {
+			absPath, _ := filepath.Abs(target)
+			outputJSON(docs, absPath)
+		} else if showRefs {
 			render.RefsTree(docs, target)
 		} else {
 			render.MultiTree(docs, target)
@@ -84,7 +120,10 @@ func main() {
 		parts := strings.Split(target, "/")
 		doc.Filename = parts[len(parts)-1]
 
-		if expandSection != "" {
+		if jsonMode {
+			absPath, _ := filepath.Abs(target)
+			outputJSON([]*parser.Document{doc}, absPath)
+		} else if expandSection != "" {
 			render.ExpandSection(doc, expandSection)
 		} else if sectionFilter != "" {
 			render.FilteredTree(doc, sectionFilter)
@@ -130,6 +169,50 @@ func parseDirectory(dir string) []*parser.Document {
 	return docs
 }
 
+func outputJSON(docs []*parser.Document, root string) {
+	output := JSONOutput{
+		Root:      root,
+		TotalDocs: len(docs),
+	}
+
+	for _, doc := range docs {
+		jsonDoc := JSONDocument{
+			Filename: doc.Filename,
+			Tokens:   doc.TotalTokens,
+			Sections: convertSections(doc.Sections),
+		}
+
+		// Add references
+		for _, ref := range doc.References {
+			jsonDoc.References = append(jsonDoc.References, JSONRef{
+				Text:   ref.Text,
+				Target: ref.Target,
+				Line:   ref.Line,
+			})
+		}
+
+		output.Documents = append(output.Documents, jsonDoc)
+		output.TotalTokens += doc.TotalTokens
+	}
+
+	json.NewEncoder(os.Stdout).Encode(output)
+}
+
+func convertSections(sections []*parser.Section) []JSONSection {
+	var result []JSONSection
+	for _, s := range sections {
+		js := JSONSection{
+			Level:    s.Level,
+			Title:    s.Title,
+			Tokens:   s.Tokens,
+			KeyTerms: s.KeyTerms,
+			Children: convertSections(s.Children),
+		}
+		result = append(result, js)
+	}
+	return result
+}
+
 func printUsage() {
 	fmt.Println(`docmap - instant documentation structure for LLMs and humans
 
@@ -148,6 +231,7 @@ Flags:
   -s, --section <name>   Filter to a specific section
   -e, --expand <name>    Show full content of a section
   -r, --refs             Show cross-references between markdown files
+  -j, --json             Output JSON format
   -v, --version          Print version
   -h, --help             Show this help
 
