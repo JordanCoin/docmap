@@ -1,4 +1,4 @@
-# docmap
+# 🗺️ docmap
 
 > **docmap — instant documentation structure for LLMs and humans.**
 > Navigate massive docs without burning tokens.
