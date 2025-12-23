@@ -179,6 +179,17 @@ Together: complete spatial awareness of any repository.
 
 No external dependencies. No API calls. Just fast, local parsing.
 
+## Roadmap
+
+Ideas for future versions:
+
+- **Depth control** (`--depth 2`) — Limit heading levels shown, e.g., only h1/h2
+- **Token budget mode** (`--budget 4000`) — Auto-select sections that fit within a token limit
+- **JSON output** (`--json`) — Machine-readable output for piping and parsing
+- **Section previews** — Show first ~100 tokens of each section inline
+
+PRs welcome for any of these!
+
 ## Contributing
 
 1. Fork → 2. Branch → 3. Commit → 4. PR
