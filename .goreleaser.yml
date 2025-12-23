@@ -1,0 +1,109 @@
+version: 2
+
+project_name: docmap
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: docmap
+    main: .
+    binary: docmap
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  github:
+    owner: JordanCoin
+    name: docmap
+
+brews:
+  - repository:
+      owner: JordanCoin
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: .
+    homepage: https://github.com/JordanCoin/docmap
+    description: Instant documentation structure for LLMs and humans
+    license: MIT
+    install: |
+      bin.install "docmap"
+    test: |
+      system "#{bin}/docmap", "--help"
+
+scoops:
+  - repository:
+      owner: JordanCoin
+      name: scoop-docmap
+      token: "{{ .Env.SCOOP_TOKEN }}"
+    homepage: https://github.com/JordanCoin/docmap
+    description: Instant documentation structure for LLMs and humans
+    license: MIT
+
+winget:
+  - name: docmap
+    publisher: JordanCoin
+    short_description: Instant documentation structure for LLMs and humans
+    license: MIT
+    publisher_url: https://github.com/JordanCoin
+    publisher_support_url: https://github.com/JordanCoin/docmap/issues
+    package_identifier: JordanCoin.docmap
+    homepage: https://github.com/JordanCoin/docmap
+    description: |
+      docmap generates a compact, structured map of your documentation
+      that LLMs can instantly understand. Navigate massive docs without
+      burning tokens.
+    license_url: https://github.com/JordanCoin/docmap/blob/main/LICENSE
+    tags:
+      - cli
+      - developer-tools
+      - ai
+      - llm
+      - documentation
+    repository:
+      owner: JordanCoin
+      name: winget-pkgs
+      branch: "JordanCoin.docmap-{{.Version}}"
+      token: "{{ .Env.SCOOP_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
