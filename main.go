@@ -10,10 +10,24 @@ import (
 	"github.com/JordanCoin/docmap/render"
 )
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: docmap <file.md|dir> [--section <name>] [--expand <name>] [--refs]")
+		printUsage()
 		os.Exit(1)
+	}
+
+	// Check for help/version flags first
+	for _, arg := range os.Args[1:] {
+		switch arg {
+		case "--help", "-h":
+			printUsage()
+			return
+		case "--version", "-v":
+			fmt.Printf("docmap %s\n", version)
+			return
+		}
 	}
 
 	target := os.Args[1]
@@ -114,4 +128,28 @@ func parseDirectory(dir string) []*parser.Document {
 	})
 
 	return docs
+}
+
+func printUsage() {
+	fmt.Println(`docmap - instant documentation structure for LLMs and humans
+
+Usage:
+  docmap <file.md|dir> [flags]
+
+Examples:
+  docmap .                          # All markdown files in directory
+  docmap README.md                  # Single file deep dive
+  docmap docs/                      # Specific folder
+  docmap README.md --section "API"  # Filter to section
+  docmap README.md --expand "API"   # Show section content
+  docmap . --refs                   # Show cross-references between docs
+
+Flags:
+  -s, --section <name>   Filter to a specific section
+  -e, --expand <name>    Show full content of a section
+  -r, --refs             Show cross-references between markdown files
+  -v, --version          Print version
+  -h, --help             Show this help
+
+More info: https://github.com/JordanCoin/docmap`)
 }
