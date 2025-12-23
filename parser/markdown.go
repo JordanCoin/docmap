@@ -10,6 +10,14 @@ type Document struct {
 	Filename    string
 	TotalTokens int
 	Sections    []*Section
+	References  []Reference // Links to other .md files
+}
+
+// Reference represents a link to another markdown file
+type Reference struct {
+	Text   string // Link text
+	Target string // Target file path
+	Line   int    // Line number where reference appears
 }
 
 // Section represents a heading and its content
@@ -36,12 +44,28 @@ func Parse(content string) *Document {
 	doc := &Document{}
 
 	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+	// Match markdown links to .md files: [text](path.md) or [text](path.md#anchor)
+	linkRe := regexp.MustCompile(`\[([^\]]+)\]\(([^)]+\.md(?:#[^)]*)?)\)`)
 
 	var allSections []*Section
 	var currentSection *Section
 	var contentBuilder strings.Builder
 
 	for i, line := range lines {
+		// Extract markdown links to .md files
+		for _, match := range linkRe.FindAllStringSubmatch(line, -1) {
+			target := match[2]
+			// Remove anchor if present
+			if idx := strings.Index(target, "#"); idx != -1 {
+				target = target[:idx]
+			}
+			doc.References = append(doc.References, Reference{
+				Text:   match[1],
+				Target: target,
+				Line:   i + 1,
+			})
+		}
+
 		if matches := headingRe.FindStringSubmatch(line); matches != nil {
 			// Save previous section's content
 			if currentSection != nil {

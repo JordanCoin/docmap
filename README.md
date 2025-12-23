@@ -66,6 +66,7 @@ docmap README.md                  # Single file deep dive
 docmap docs/                      # Specific folder
 docmap README.md --section "API"  # Filter to section
 docmap README.md --expand "API"   # Show section content
+docmap . --refs                   # Show cross-references between docs
 ```
 
 ## Output
@@ -120,6 +121,33 @@ See the actual content:
 
 ```bash
 docmap docs/API.md --expand "Authentication"
+```
+
+### References Mode
+
+See how docs link to each other (like `codemap --deps`):
+
+```bash
+docmap . --refs
+```
+
+```
+╭─────────────────────── project/ ───────────────────────╮
+│              References: 53 links between docs         │
+╰────────────────────────────────────────────────────────╯
+
+HUBS: docs/architecture.md (5←), docs/api.md (3←)
+
+Reference Flow:
+
+  README.md
+  ├──▶ docs/architecture.md
+  ├──▶ docs/api.md
+  └──▶ CHANGELOG.md
+
+  docs/architecture.md
+  ├──▶ docs/components.md
+  └──▶ docs/data-flow.md
 ```
 
 ## Why docmap?

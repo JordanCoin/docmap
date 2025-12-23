@@ -12,7 +12,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: docmap <file.md|dir> [--section <name>] [--expand <name>]")
+		fmt.Println("Usage: docmap <file.md|dir> [--section <name>] [--expand <name>] [--refs]")
 		os.Exit(1)
 	}
 
@@ -21,6 +21,7 @@ func main() {
 	// Parse flags
 	var sectionFilter string
 	var expandSection string
+	var showRefs bool
 	for i := 2; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--section", "-s":
@@ -33,6 +34,8 @@ func main() {
 				expandSection = os.Args[i+1]
 				i++
 			}
+		case "--refs", "-r":
+			showRefs = true
 		}
 	}
 
@@ -50,7 +53,11 @@ func main() {
 			fmt.Println("No markdown files found")
 			os.Exit(1)
 		}
-		render.MultiTree(docs, target)
+		if showRefs {
+			render.RefsTree(docs, target)
+		} else {
+			render.MultiTree(docs, target)
+		}
 	} else {
 		// Single file mode
 		content, err := os.ReadFile(target)

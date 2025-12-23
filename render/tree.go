@@ -261,3 +261,119 @@ func getTopSections(sections []*parser.Section, maxDepth int) []*parser.Section 
 	}
 	return result
 }
+
+// RefsTree renders document references (links to other .md files)
+func RefsTree(docs []*parser.Document, dirName string) {
+	// Build reference graph
+	type RefInfo struct {
+		From   string
+		To     string
+		Text   string
+		Line   int
+	}
+
+	var allRefs []RefInfo
+	fileRefs := make(map[string][]string)     // file -> files it references
+	fileRefBy := make(map[string][]string)    // file -> files that reference it
+
+	for _, doc := range docs {
+		for _, ref := range doc.References {
+			allRefs = append(allRefs, RefInfo{
+				From: doc.Filename,
+				To:   ref.Target,
+				Text: ref.Text,
+				Line: ref.Line,
+			})
+			fileRefs[doc.Filename] = append(fileRefs[doc.Filename], ref.Target)
+			fileRefBy[ref.Target] = append(fileRefBy[ref.Target], doc.Filename)
+		}
+	}
+
+	if len(allRefs) == 0 {
+		fmt.Println("No markdown cross-references found")
+		return
+	}
+
+	// Header
+	innerWidth := 60
+	titleLine := fmt.Sprintf(" %s/ ", dirName)
+	padding := innerWidth - len(titleLine)
+	leftPad := padding / 2
+	rightPad := padding - leftPad
+	fmt.Printf("╭%s%s%s╮\n", strings.Repeat("─", leftPad), titleLine, strings.Repeat("─", rightPad))
+
+	info := fmt.Sprintf("References: %d links between docs", len(allRefs))
+	fmt.Printf("│ %-*s │\n", innerWidth-2, centerText(info, innerWidth-2))
+	fmt.Printf("╰%s╯\n", strings.Repeat("─", innerWidth))
+	fmt.Println()
+
+	// Find hubs (most referenced files)
+	type hub struct {
+		file  string
+		count int
+	}
+	var hubs []hub
+	for file, refs := range fileRefBy {
+		if len(refs) >= 2 {
+			hubs = append(hubs, hub{file, len(refs)})
+		}
+	}
+
+	if len(hubs) > 0 {
+		// Sort by count descending
+		for i := 0; i < len(hubs); i++ {
+			for j := i + 1; j < len(hubs); j++ {
+				if hubs[j].count > hubs[i].count {
+					hubs[i], hubs[j] = hubs[j], hubs[i]
+				}
+			}
+		}
+
+		fmt.Printf("%sHUBS:%s ", bold, reset)
+		var hubStrs []string
+		for _, h := range hubs {
+			if len(hubStrs) >= 5 {
+				break
+			}
+			hubStrs = append(hubStrs, fmt.Sprintf("%s%s%s (%d←)", green, h.file, reset, h.count))
+		}
+		fmt.Println(strings.Join(hubStrs, ", "))
+		fmt.Println()
+	}
+
+	// Show reference flow by file
+	fmt.Printf("%sReference Flow:%s\n", bold+cyan, reset)
+	fmt.Println()
+
+	// Group by source file
+	printed := make(map[string]bool)
+	for _, doc := range docs {
+		if len(doc.References) == 0 {
+			continue
+		}
+		if printed[doc.Filename] {
+			continue
+		}
+		printed[doc.Filename] = true
+
+		// Dedupe targets
+		seen := make(map[string]bool)
+		var targets []string
+		for _, ref := range doc.References {
+			if !seen[ref.Target] {
+				targets = append(targets, ref.Target)
+				seen[ref.Target] = true
+			}
+		}
+
+		fmt.Printf("  %s%s%s\n", bold, doc.Filename, reset)
+		for i, target := range targets {
+			connector := "├──▶ "
+			if i == len(targets)-1 {
+				connector = "└──▶ "
+			}
+			fmt.Printf("  %s%s%s%s\n", dim, connector, reset, target)
+		}
+		fmt.Println()
+	}
+}
