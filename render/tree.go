@@ -266,15 +266,15 @@ func getTopSections(sections []*parser.Section, maxDepth int) []*parser.Section 
 func RefsTree(docs []*parser.Document, dirName string) {
 	// Build reference graph
 	type RefInfo struct {
-		From   string
-		To     string
-		Text   string
-		Line   int
+		From string
+		To   string
+		Text string
+		Line int
 	}
 
 	var allRefs []RefInfo
-	fileRefs := make(map[string][]string)     // file -> files it references
-	fileRefBy := make(map[string][]string)    // file -> files that reference it
+	fileRefs := make(map[string][]string)  // file -> files it references
+	fileRefBy := make(map[string][]string) // file -> files that reference it
 
 	for _, doc := range docs {
 		for _, ref := range doc.References {

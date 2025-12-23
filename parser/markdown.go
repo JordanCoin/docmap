@@ -22,15 +22,15 @@ type Reference struct {
 
 // Section represents a heading and its content
 type Section struct {
-	Level       int       // 1 = #, 2 = ##, etc.
-	Title       string
-	Content     string    // raw content (excluding children)
-	Tokens      int       // estimated tokens for this section
-	KeyTerms    []string  // extracted key concepts
-	Children    []*Section
-	Parent      *Section
-	LineStart   int
-	LineEnd     int
+	Level     int // 1 = #, 2 = ##, etc.
+	Title     string
+	Content   string   // raw content (excluding children)
+	Tokens    int      // estimated tokens for this section
+	KeyTerms  []string // extracted key concepts
+	Children  []*Section
+	Parent    *Section
+	LineStart int
+	LineEnd   int
 }
 
 // Token estimation: ~4 chars per token (rough approximation)
