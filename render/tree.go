@@ -36,6 +36,13 @@ func printHeader(doc *parser.Document) {
 	sectionCount := len(doc.GetAllSections())
 	info := fmt.Sprintf("Sections: %d | ~%s tokens", sectionCount, formatTokens(doc.TotalTokens))
 
+	// Truncate long filenames for display
+	displayName := doc.Filename
+	maxNameLen := 50
+	if len(displayName) > maxNameLen {
+		displayName = "..." + displayName[len(displayName)-maxNameLen+3:]
+	}
+
 	// Calculate width based on content
 	innerWidth := 60
 	if len(info)+4 > innerWidth {
@@ -43,7 +50,10 @@ func printHeader(doc *parser.Document) {
 	}
 
 	// Title in top border (like codemap)
-	titleLine := fmt.Sprintf(" %s ", doc.Filename)
+	titleLine := fmt.Sprintf(" %s ", displayName)
+	if len(titleLine) > innerWidth {
+		innerWidth = len(titleLine) + 4
+	}
 	padding := innerWidth - len(titleLine)
 	leftPad := padding / 2
 	rightPad := padding - leftPad

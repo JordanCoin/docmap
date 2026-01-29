@@ -8,9 +8,9 @@
 
 ## The Problem
 
-Documentation files are everywhere — READMEs, design docs, changelogs, API references. But:
+Documentation files are everywhere — READMEs, design docs, changelogs, API references, PDFs. But:
 
-- LLMs can't open large markdown files (token limits)
+- LLMs can't open large markdown files or PDFs (token limits)
 - Humans have to open each file to see what's inside
 - There's no "file tree" for documentation *content*
 
@@ -61,8 +61,9 @@ scoop install docmap
 ## Usage
 
 ```bash
-docmap .                          # All markdown files in directory
-docmap README.md                  # Single file deep dive
+docmap .                          # All markdown and PDF files in directory
+docmap README.md                  # Single markdown file deep dive
+docmap report.pdf                 # Single PDF file structure
 docmap docs/                      # Specific folder
 docmap README.md --section "API"  # Filter to section
 docmap README.md --expand "API"   # Show section content
@@ -73,7 +74,7 @@ docmap . --refs                   # Show cross-references between docs
 
 ### Directory Mode
 
-Map all markdown files in a project:
+Map all markdown and PDF files in a project:
 
 ```bash
 docmap /path/to/project
@@ -122,6 +123,28 @@ See the actual content:
 ```bash
 docmap docs/API.md --expand "Authentication"
 ```
+
+### PDF Support
+
+Map PDF documents by their outline (table of contents):
+
+```bash
+docmap report.pdf
+```
+
+```
+╭──────────────────── report.pdf ────────────────────╮
+│             Sections: 7 | ~16.9k tokens            │
+╰────────────────────────────────────────────────────╯
+
+└── Claude Code-Powered Writing Editor (9.1k)
+    ├── Introduction and Feasibility Overview (1.3k)
+    ├── Key Features and Benefits (1.3k)
+    ├── Designing the Interface (1.3k)
+    └── Development Steps (1.3k)
+```
+
+**Note:** For PDFs with outlines/bookmarks, docmap shows the document structure with estimated token distribution. For PDFs without outlines, it falls back to page-by-page structure. Scanned/image-only PDFs will show a page count but no text content.
 
 ### References Mode
 
@@ -172,12 +195,19 @@ Together: complete spatial awareness of any repository.
 
 ## How It Works
 
-1. **Parse** markdown headings into a tree structure
+**Markdown:**
+1. **Parse** headings into a tree structure
 2. **Estimate** tokens per section (~4 chars/token)
 3. **Extract** key terms (bold text, inline code)
 4. **Render** as a navigable tree
 
-No external dependencies. No API calls. Just fast, local parsing.
+**PDF:**
+1. **Extract** outline/bookmarks if available, otherwise use pages
+2. **Parse** text content from each page
+3. **Estimate** tokens (~4 chars/token)
+4. **Render** as a navigable tree
+
+No API calls. Just fast, local parsing.
 
 ## Roadmap
 

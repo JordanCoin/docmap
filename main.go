@@ -97,7 +97,7 @@ func main() {
 		// Multi-file mode: find all .md files
 		docs := parseDirectory(target)
 		if len(docs) == 0 {
-			fmt.Println("No markdown files found")
+			fmt.Println("No markdown or PDF files found")
 			os.Exit(1)
 		}
 		if jsonMode {
@@ -110,13 +110,26 @@ func main() {
 		}
 	} else {
 		// Single file mode
-		content, err := os.ReadFile(target)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-			os.Exit(1)
+		var doc *parser.Document
+
+		if strings.HasSuffix(strings.ToLower(target), ".pdf") {
+			// PDF file
+			var err error
+			doc, err = parser.ParsePDF(target)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing PDF: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			// Markdown file
+			content, err := os.ReadFile(target)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+				os.Exit(1)
+			}
+			doc = parser.Parse(string(content))
 		}
 
-		doc := parser.Parse(string(content))
 		parts := strings.Split(target, "/")
 		doc.Filename = parts[len(parts)-1]
 
@@ -143,21 +156,38 @@ func parseDirectory(dir string) []*parser.Document {
 		if info.IsDir() {
 			return nil
 		}
-		if !strings.HasSuffix(strings.ToLower(path), ".md") {
+
+		lowerPath := strings.ToLower(path)
+		isMd := strings.HasSuffix(lowerPath, ".md")
+		isPdf := strings.HasSuffix(lowerPath, ".pdf")
+
+		if !isMd && !isPdf {
 			return nil
 		}
-		// Skip hidden files and common non-doc files
+
+		// Skip hidden files
 		base := filepath.Base(path)
 		if strings.HasPrefix(base, ".") {
 			return nil
 		}
 
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil
+		var doc *parser.Document
+
+		if isPdf {
+			var err error
+			doc, err = parser.ParsePDF(path)
+			if err != nil {
+				// Skip PDFs that can't be parsed
+				return nil
+			}
+		} else {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			doc = parser.Parse(string(content))
 		}
 
-		doc := parser.Parse(string(content))
 		// Get relative path from dir
 		relPath, _ := filepath.Rel(dir, path)
 		doc.Filename = relPath
@@ -217,11 +247,12 @@ func printUsage() {
 	fmt.Println(`docmap - instant documentation structure for LLMs and humans
 
 Usage:
-  docmap <file.md|dir> [flags]
+  docmap <file.md|file.pdf|dir> [flags]
 
 Examples:
-  docmap .                          # All markdown files in directory
-  docmap README.md                  # Single file deep dive
+  docmap .                          # All markdown and PDF files in directory
+  docmap README.md                  # Single markdown file deep dive
+  docmap report.pdf                 # Single PDF file structure
   docmap docs/                      # Specific folder
   docmap README.md --section "API"  # Filter to section
   docmap README.md --expand "API"   # Show section content
@@ -234,6 +265,10 @@ Flags:
   -j, --json             Output JSON format
   -v, --version          Print version
   -h, --help             Show this help
+
+PDF Support:
+  PDFs with outlines show document structure; tokens are estimated.
+  PDFs without outlines fall back to page-by-page structure.
 
 More info: https://github.com/JordanCoin/docmap`)
 }
