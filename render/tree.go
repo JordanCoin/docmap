@@ -202,6 +202,9 @@ func MultiTree(docs []*parser.Document, dirName string) {
 
 	// Title in top border (like codemap)
 	titleLine := fmt.Sprintf(" %s/ ", dirName)
+	if len(titleLine) > innerWidth {
+		innerWidth = len(titleLine) + 4
+	}
 	padding := innerWidth - len(titleLine)
 	leftPad := padding / 2
 	rightPad := padding - leftPad
@@ -393,6 +396,9 @@ func RefsTree(docs []*parser.Document, dirName string) {
 	// Header
 	innerWidth := 60
 	titleLine := fmt.Sprintf(" %s/ ", dirName)
+	if len(titleLine) > innerWidth {
+		innerWidth = len(titleLine) + 4
+	}
 	padding := innerWidth - len(titleLine)
 	leftPad := padding / 2
 	rightPad := padding - leftPad
