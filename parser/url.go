@@ -42,8 +42,21 @@ type headingInfo struct {
 	Level   int
 }
 
-// ParseURL fetches a URL via headless Chrome, converts to PDF, and extracts sections.
+// ParseURL fetches a URL and extracts document sections.
+// Tries HTML parsing first (fast, accurate for SSR sites), falls back to Chrome/PDF.
 func ParseURL(url string) (*Document, error) {
+	// Try HTML approach first — works for SSR sites (most doc sites)
+	doc, err := parseHTMLFromURL(url)
+	if err == nil && doc != nil && len(doc.Sections) > 0 {
+		return doc, nil
+	}
+
+	// Fall back to Chrome → PDF → text extraction
+	return parseURLviaPDF(url)
+}
+
+// parseURLviaPDF uses headless Chrome to render a URL to PDF, then extracts sections.
+func parseURLviaPDF(url string) (*Document, error) {
 	chromePath, err := findChrome()
 	if err != nil {
 		return nil, fmt.Errorf("chrome not found: %w\n\nInstall Chrome or set CHROME_PATH environment variable", err)
