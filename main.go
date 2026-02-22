@@ -97,7 +97,7 @@ func main() {
 		// Multi-file mode: find all .md files
 		docs := parseDirectory(target)
 		if len(docs) == 0 {
-			fmt.Println("No markdown or PDF files found")
+			fmt.Println("No markdown, PDF, or YAML files found")
 			os.Exit(1)
 		}
 		if jsonMode {
@@ -112,12 +112,25 @@ func main() {
 		// Single file mode
 		var doc *parser.Document
 
-		if strings.HasSuffix(strings.ToLower(target), ".pdf") {
+		lower := strings.ToLower(target)
+		if strings.HasSuffix(lower, ".pdf") {
 			// PDF file
 			var err error
 			doc, err = parser.ParsePDF(target)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error parsing PDF: %v\n", err)
+				os.Exit(1)
+			}
+		} else if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+			// YAML file
+			content, err := os.ReadFile(target)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
+				os.Exit(1)
+			}
+			doc, err = parser.ParseYAML(string(content))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error parsing YAML: %v\n", err)
 				os.Exit(1)
 			}
 		} else {
@@ -160,8 +173,9 @@ func parseDirectory(dir string) []*parser.Document {
 		lowerPath := strings.ToLower(path)
 		isMd := strings.HasSuffix(lowerPath, ".md")
 		isPdf := strings.HasSuffix(lowerPath, ".pdf")
+		isYaml := strings.HasSuffix(lowerPath, ".yaml") || strings.HasSuffix(lowerPath, ".yml")
 
-		if !isMd && !isPdf {
+		if !isMd && !isPdf && !isYaml {
 			return nil
 		}
 
@@ -178,6 +192,16 @@ func parseDirectory(dir string) []*parser.Document {
 			doc, err = parser.ParsePDF(path)
 			if err != nil {
 				// Skip PDFs that can't be parsed
+				return nil
+			}
+		} else if isYaml {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+			doc, err = parser.ParseYAML(string(content))
+			if err != nil {
+				// Skip YAML files that can't be parsed
 				return nil
 			}
 		} else {
@@ -247,12 +271,13 @@ func printUsage() {
 	fmt.Println(`docmap - instant documentation structure for LLMs and humans
 
 Usage:
-  docmap <file.md|file.pdf|dir> [flags]
+  docmap <file.md|file.pdf|file.yaml|dir> [flags]
 
 Examples:
-  docmap .                          # All markdown and PDF files in directory
+  docmap .                          # All markdown, PDF, and YAML files
   docmap README.md                  # Single markdown file deep dive
   docmap report.pdf                 # Single PDF file structure
+  docmap config.yaml                # Single YAML file structure
   docmap docs/                      # Specific folder
   docmap README.md --section "API"  # Filter to section
   docmap README.md --expand "API"   # Show section content
@@ -269,6 +294,10 @@ Flags:
 PDF Support:
   PDFs with outlines show document structure; tokens are estimated.
   PDFs without outlines fall back to page-by-page structure.
+
+YAML Support:
+  Maps keys to sections with nested children. Sequences use name/id/title
+  fields for titles when available, falling back to key: value or [N].
 
 More info: https://github.com/JordanCoin/docmap`)
 }
