@@ -65,6 +65,7 @@ func main() {
 	// Parse flags
 	var sectionFilter string
 	var expandSection string
+	var searchQuery string
 	var showRefs bool
 	var jsonMode bool
 	for i := 2; i < len(os.Args); i++ {
@@ -77,6 +78,11 @@ func main() {
 		case "--expand", "-e":
 			if i+1 < len(os.Args) {
 				expandSection = os.Args[i+1]
+				i++
+			}
+		case "--search":
+			if i+1 < len(os.Args) {
+				searchQuery = os.Args[i+1]
 				i++
 			}
 		case "--refs", "-r":
@@ -103,6 +109,8 @@ func main() {
 		if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
+		} else if searchQuery != "" {
+			render.SearchResults(docs, searchQuery)
 		} else if showRefs {
 			render.RefsTree(docs, target)
 		} else {
@@ -149,6 +157,8 @@ func main() {
 		if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
+		} else if searchQuery != "" {
+			render.SearchResults([]*parser.Document{doc}, searchQuery)
 		} else if expandSection != "" {
 			render.ExpandSection(doc, expandSection)
 		} else if sectionFilter != "" {
@@ -282,8 +292,10 @@ Examples:
   docmap README.md --section "API"  # Filter to section
   docmap README.md --expand "API"   # Show section content
   docmap . --refs                   # Show cross-references between docs
+  docmap docs/ --search "auth"     # Search across all files
 
 Flags:
+  --search <query>       Search sections across all files
   -s, --section <name>   Filter to a specific section
   -e, --expand <name>    Show full content of a section
   -r, --refs             Show cross-references between markdown files

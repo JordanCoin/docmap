@@ -272,6 +272,92 @@ func getTopSections(sections []*parser.Section, maxDepth int) []*parser.Section 
 	return result
 }
 
+// SearchResult holds a matched section with its file context
+type SearchResult struct {
+	Filename string
+	Path     string // e.g. "endpoints > Ban Member"
+	Section  *parser.Section
+}
+
+// SearchResults searches all docs for sections matching the query and renders results
+func SearchResults(docs []*parser.Document, query string) {
+	query = strings.ToLower(query)
+	var results []SearchResult
+
+	for _, doc := range docs {
+		searchSections(doc.Filename, doc.Sections, "", query, &results)
+	}
+
+	if len(results) == 0 {
+		fmt.Printf("No sections matching '%s'\n", query)
+		return
+	}
+
+	// Header
+	fmt.Printf("%s%d matches for '%s'%s\n\n", bold, len(results), query, reset)
+
+	for i, r := range results {
+		isLast := i == len(results)-1
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+
+		tokenStr := dim + fmt.Sprintf("(%s)", formatTokens(r.Section.Tokens)) + reset
+		filePart := dim + r.Filename + " > " + reset
+		if r.Path != "" {
+			filePart = dim + r.Filename + " > " + r.Path + " > " + reset
+		}
+		fmt.Printf("%s%s%s%s%s%s %s\n", dim, connector, reset, filePart, bold+cyan+r.Section.Title+reset, "", tokenStr)
+
+		// Show children summary if present
+		if len(r.Section.Children) > 0 {
+			childPrefix := "│   "
+			if isLast {
+				childPrefix = "    "
+			}
+			for j, child := range r.Section.Children {
+				if j >= 5 {
+					fmt.Printf("%s%s... %d more%s\n", childPrefix, dim, len(r.Section.Children)-5, reset)
+					break
+				}
+				childIsLast := j == len(r.Section.Children)-1 || j == 4
+				childConn := "├─ "
+				if childIsLast {
+					childConn = "└─ "
+				}
+				fmt.Printf("%s%s%s%s %s\n", childPrefix, dim, childConn, child.Title+reset, dim+fmt.Sprintf("(%s)", formatTokens(child.Tokens))+reset)
+			}
+		}
+	}
+
+	fmt.Println()
+}
+
+func searchSections(filename string, sections []*parser.Section, parentPath string, query string, results *[]SearchResult) {
+	for _, s := range sections {
+		titleMatch := strings.Contains(strings.ToLower(s.Title), query)
+		contentMatch := strings.Contains(strings.ToLower(s.Content), query)
+
+		if titleMatch || contentMatch {
+			*results = append(*results, SearchResult{
+				Filename: filename,
+				Path:     parentPath,
+				Section:  s,
+			})
+		}
+
+		// Search children
+		childPath := parentPath
+		if childPath != "" {
+			childPath += " > " + s.Title
+		} else {
+			childPath = s.Title
+		}
+		searchSections(filename, s.Children, childPath, query, results)
+	}
+}
+
 // RefsTree renders document references (links to other .md files)
 func RefsTree(docs []*parser.Document, dirName string) {
 	// Build reference graph
