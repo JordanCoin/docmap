@@ -66,6 +66,7 @@ func main() {
 	var sectionFilter string
 	var expandSection string
 	var searchQuery string
+	var outputFile string
 	var showRefs bool
 	var jsonMode bool
 	for i := 2; i < len(os.Args); i++ {
@@ -85,11 +86,59 @@ func main() {
 				searchQuery = os.Args[i+1]
 				i++
 			}
+		case "--output", "-o":
+			if i+1 < len(os.Args) {
+				outputFile = os.Args[i+1]
+				i++
+			}
 		case "--refs", "-r":
 			showRefs = true
 		case "--json", "-j":
 			jsonMode = true
 		}
+	}
+
+	// Check if target is a URL
+	isURL := strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
+	if isURL {
+		doc, err := parser.ParseURL(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Use the URL's last path segment as filename
+		parts := strings.Split(strings.TrimRight(target, "/"), "/")
+		doc.Filename = parts[len(parts)-1]
+		if doc.Filename == "" {
+			doc.Filename = target
+		}
+
+		if outputFile != "" {
+			yamlContent, err := parser.ExportYAML(doc)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error exporting YAML: %v\n", err)
+				os.Exit(1)
+			}
+			if err := os.WriteFile(outputFile, []byte(yamlContent), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "Saved to %s\n", outputFile)
+		}
+
+		if jsonMode {
+			outputJSON([]*parser.Document{doc}, target)
+		} else if searchQuery != "" {
+			render.SearchResults([]*parser.Document{doc}, searchQuery)
+		} else if expandSection != "" {
+			render.ExpandSection(doc, expandSection)
+		} else if sectionFilter != "" {
+			render.FilteredTree(doc, sectionFilter)
+		} else if outputFile == "" {
+			render.Tree(doc)
+		}
+		return
 	}
 
 	// Check if target is a directory
@@ -154,6 +203,19 @@ func main() {
 		parts := strings.Split(target, "/")
 		doc.Filename = parts[len(parts)-1]
 
+		if outputFile != "" {
+			yamlContent, err := parser.ExportYAML(doc)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error exporting YAML: %v\n", err)
+				os.Exit(1)
+			}
+			if err := os.WriteFile(outputFile, []byte(yamlContent), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing file: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "Saved to %s\n", outputFile)
+		}
+
 		if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
@@ -163,7 +225,7 @@ func main() {
 			render.ExpandSection(doc, expandSection)
 		} else if sectionFilter != "" {
 			render.FilteredTree(doc, sectionFilter)
-		} else {
+		} else if outputFile == "" {
 			render.Tree(doc)
 		}
 	}
@@ -281,7 +343,7 @@ func printUsage() {
 	fmt.Println(`docmap - instant documentation structure for LLMs and humans
 
 Usage:
-  docmap <file.md|file.pdf|file.yaml|dir> [flags]
+  docmap <file.md|file.pdf|file.yaml|url|dir> [flags]
 
 Examples:
   docmap .                          # All markdown, PDF, and YAML files
@@ -292,12 +354,19 @@ Examples:
   docmap README.md --section "API"  # Filter to section
   docmap README.md --expand "API"   # Show section content
   docmap . --refs                   # Show cross-references between docs
-  docmap docs/ --search "auth"     # Search across all files
+  docmap docs/ --search "auth"      # Search across all files
+
+URL Support:
+  docmap https://example.com/docs                     # Map a web page
+  docmap https://example.com/docs --search "auth"     # Search sections
+  docmap https://example.com/docs -o docs.yaml        # Save as YAML
+  docmap docs.yaml --search "auth"                    # Fast local access
 
 Flags:
   --search <query>       Search sections across all files
   -s, --section <name>   Filter to a specific section
   -e, --expand <name>    Show full content of a section
+  -o, --output <file>    Export structure as YAML file
   -r, --refs             Show cross-references between markdown files
   -j, --json             Output JSON format
   -v, --version          Print version
@@ -310,6 +379,10 @@ PDF Support:
 YAML Support:
   Maps keys to sections with nested children. Sequences use name/id/title
   fields for titles when available, falling back to key: value or [N].
+
+URL Support:
+  Uses headless Chrome to render web pages, then extracts heading structure
+  from font sizes. Requires Chrome/Chromium installed, or set CHROME_PATH.
 
 More info: https://github.com/JordanCoin/docmap`)
 }
