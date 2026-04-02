@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,18 @@ import (
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/render"
 )
+
+// StdinManifest represents the JSON manifest read from stdin
+type StdinManifest struct {
+	Root  string         `json:"root"`
+	Files []ManifestFile `json:"files"`
+}
+
+// ManifestFile represents a single file in the stdin manifest
+type ManifestFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
 
 // JSON output structures
 type JSONOutput struct {
@@ -48,7 +61,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Check for help/version flags first
+	// Check for help/version flags first (before full parse)
 	for _, arg := range os.Args[1:] {
 		switch arg {
 		case "--help", "-h":
@@ -60,15 +73,16 @@ func main() {
 		}
 	}
 
-	target := os.Args[1]
-
-	// Parse flags
+	// Parse flags (scan all args for flags first)
 	var sectionFilter string
 	var expandSection string
 	var searchQuery string
 	var showRefs bool
 	var jsonMode bool
-	for i := 2; i < len(os.Args); i++ {
+	var stdinMode bool
+	var target string
+
+	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--section", "-s":
 			if i+1 < len(os.Args) {
@@ -89,7 +103,76 @@ func main() {
 			showRefs = true
 		case "--json", "-j":
 			jsonMode = true
+		case "--stdin":
+			stdinMode = true
+		default:
+			if target == "" {
+				target = os.Args[i]
+			}
 		}
+	}
+
+	// Handle --stdin mode
+	if stdinMode {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading stdin: %v\n", err)
+			os.Exit(1)
+		}
+
+		var manifest StdinManifest
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing JSON manifest: %v\n", err)
+			os.Exit(1)
+		}
+
+		if manifest.Root == "" {
+			fmt.Fprintf(os.Stderr, "Error: manifest missing 'root' field\n")
+			os.Exit(1)
+		}
+
+		// Create temp directory and write files
+		tmpDir, err := os.MkdirTemp("", "docmap-stdin-*")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating temp directory: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.RemoveAll(tmpDir)
+
+		for _, f := range manifest.Files {
+			destPath := filepath.Join(tmpDir, f.Path)
+			if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "Error creating directory for %s: %v\n", f.Path, err)
+				os.Exit(1)
+			}
+			if err := os.WriteFile(destPath, []byte(f.Content), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", f.Path, err)
+				os.Exit(1)
+			}
+		}
+
+		// Parse the temp directory
+		docs := parseDirectory(tmpDir)
+		if len(docs) == 0 {
+			fmt.Println("No markdown, PDF, or YAML files found")
+			os.Exit(1)
+		}
+
+		if jsonMode {
+			outputJSON(docs, manifest.Root)
+		} else if searchQuery != "" {
+			render.SearchResults(docs, searchQuery)
+		} else if showRefs {
+			render.RefsTree(docs, manifest.Root)
+		} else {
+			render.MultiTree(docs, manifest.Root)
+		}
+		return
+	}
+
+	if target == "" {
+		printUsage()
+		os.Exit(1)
 	}
 
 	// Check if target is a directory
@@ -282,6 +365,7 @@ func printUsage() {
 
 Usage:
   docmap <file.md|file.pdf|file.yaml|dir> [flags]
+  docmap --stdin [flags] < manifest.json
 
 Examples:
   docmap .                          # All markdown, PDF, and YAML files
@@ -293,8 +377,10 @@ Examples:
   docmap README.md --expand "API"   # Show section content
   docmap . --refs                   # Show cross-references between docs
   docmap docs/ --search "auth"     # Search across all files
+  docmap --stdin --json < manifest.json  # Parse files from JSON manifest
 
 Flags:
+  --stdin                Read JSON file manifest from stdin (no filesystem access needed)
   --search <query>       Search sections across all files
   -s, --section <name>   Filter to a specific section
   -e, --expand <name>    Show full content of a section
