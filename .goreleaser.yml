@@ -57,7 +57,7 @@ brews:
   - repository:
       owner: JordanCoin
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      token: "{{ .Env.SCOOP_TOKEN }}"
     directory: .
     homepage: https://github.com/JordanCoin/docmap
     description: Instant documentation structure for LLMs and humans
