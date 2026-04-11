@@ -13,6 +13,7 @@ Documentation files are everywhere — READMEs, design docs, changelogs, API ref
 - LLMs can't open large markdown files or PDFs (token limits)
 - Humans have to open each file to see what's inside
 - There's no "file tree" for documentation *content*
+- And once you find a section, there's no way to say "show me the Python code block" or "find the warning callout"
 
 ## The Solution
 
@@ -21,31 +22,21 @@ docmap .
 ```
 
 ```
-╭─────────────────────── docs/ ───────────────────────╮
-│      22 files | 645 sections | ~109.2k tokens       │
-╰─────────────────────────────────────────────────────╯
+╭──────────────────────── docs/ ────────────────────────╮
+│         22 files │ 645 sections │ ~109k tokens        │
+│  18 callouts · 41 code blocks · 7 tables · 2 math     │
+│  33 tasks (19 done) · 4 wiki · 6 embeds               │
+╰────────────────────────────────────────────────────────╯
 
-├── README.md (3.8k)
-│   ├─ Project Overview
-│   ├─ Installation
-│   └─ Quick Start
-├── docs/ARCHITECTURE.md (7.7k)
-│   ├─ System Design
-│   ├─ Component Details
-│   └─ Data Flow
-├── docs/API.md (12.1k)
-│   ├─ Authentication
-│   ├─ Endpoints
-│   └─ Error Handling
-└── CHANGELOG.md (15.2k)
-    ├─ v2.0.0
-    ├─ v1.5.0
-    └─ v1.0.0
+├── README.md (3.8k, 18 §) · 14 code · 1 tables
+├── docs/ARCHITECTURE.md (7.7k, 33 §) · 6 code · 3 callouts
+├── docs/API.md (12.1k, 47 §) · 21 code · 4 tables
+└── CHANGELOG.md (15.2k, 41 §) · 2 callouts
 ```
 
-One command. Instant structure. No LLM needed.
+One command. Full inventory. No LLM needed.
 
-## Install
+## Install the CLI
 
 ```bash
 # macOS/Linux
@@ -58,131 +49,206 @@ scoop install docmap
 
 > Other options: [Releases](https://github.com/JordanCoin/docmap/releases) | `go install github.com/JordanCoin/docmap@latest`
 
+## Install the Claude Code skill
+
+docmap ships a Claude Code skill (`SKILL.md`) that teaches Claude when and how to use the CLI — the drill-downs, line lookups, search across notables, and `--since` git integration. Pick whichever install method fits your workflow.
+
+### Option A — Plugin marketplace (recommended)
+
+Inside Claude Code, add this repo as a marketplace and install the plugin:
+
+```text
+/plugin marketplace add JordanCoin/docmap
+/plugin install docmap@docmap
+```
+
+That's it. Claude Code clones the repo, picks up `.claude-plugin/marketplace.json`, and installs the `docmap` plugin from `plugins/docmap/`. The skill becomes available as `/docmap` and Claude will auto-invoke it when you're working with markdown docs.
+
+Update later with `/plugin marketplace update`.
+
+### Option B — Personal user skill
+
+Drop the SKILL.md into your personal Claude skills folder so it's available across every project, no marketplace needed:
+
+```bash
+mkdir -p ~/.claude/skills/docmap
+curl -o ~/.claude/skills/docmap/SKILL.md \
+  https://raw.githubusercontent.com/JordanCoin/docmap/main/plugins/docmap/skills/docmap/SKILL.md
+```
+
+### Option C — Project-scoped (commit to your repo)
+
+If you want every contributor on a specific project to auto-load the docmap skill while working in that repo, commit it to `.claude/skills/`:
+
+```bash
+mkdir -p .claude/skills/docmap
+curl -o .claude/skills/docmap/SKILL.md \
+  https://raw.githubusercontent.com/JordanCoin/docmap/main/plugins/docmap/skills/docmap/SKILL.md
+git add .claude/skills/docmap/SKILL.md
+```
+
+### Browse the skill
+
+Read the shipped SKILL.md on GitHub before installing: [plugins/docmap/skills/docmap/SKILL.md](./plugins/docmap/skills/docmap/SKILL.md).
+
 ## Usage
 
 ```bash
-docmap .                          # All markdown and PDF files in directory
-docmap README.md                  # Single markdown file deep dive
-docmap report.pdf                 # Single PDF file structure
-docmap docs/                      # Specific folder
-docmap README.md --section "API"  # Filter to section
-docmap README.md --expand "API"   # Show section content
-docmap . --refs                   # Show cross-references between docs
+docmap .                            # Map everything in a directory
+docmap README.md                    # Deep dive single file
+docmap report.pdf                   # PDF document structure
+docmap config.yaml                  # YAML file structure
+
+docmap README.md --section "API"    # Filter to section
+docmap README.md --expand "API"     # Show section content
+
+docmap file.md --type code          # List every code block
+docmap file.md --type code --lang python   # Only Python code blocks
+docmap file.md --type callout --kind warning  # Only warning callouts
+docmap file.md --type table         # Every table with its headers
+
+docmap file.md --at 154             # What's at line 154?
+docmap file.md --since HEAD~5       # Constructs on lines changed since a git ref
+
+docmap file.md --search "auth"      # Search titles, content, and notables
+docmap . --refs                     # Cross-references between docs
+docmap file.md --json               # Full typed AST as JSON
 ```
 
 ## Output
 
-### Directory Mode
-
-Map all markdown and PDF files in a project:
-
-```bash
-docmap /path/to/project
-```
-
-Shows each file with token count and top-level sections.
-
-### Single File Mode
-
-Deep dive into one document:
+### Single file deep dive
 
 ```bash
 docmap docs/ARCHITECTURE.md
 ```
 
 ```
-╭────────────────── ARCHITECTURE.md ──────────────────╮
-│           33 sections | ~7.7k tokens                │
-╰─────────────────────────────────────────────────────╯
+╭──────────────── ARCHITECTURE.md ─────────────────╮
+│           Sections: 33 │ ~7.7k tokens            │
+│    3 callouts · 6 code blocks · 2 tables         │
+╰───────────────────────────────────────────────────╯
 
-├── System Design (2.1k)
-│   ├── Vision
-│   ├── Core Principles
-│   │   └─ "Headless-first", "Plan before execute"
-│   └── Architecture Overview
+├── System Design (2.1k) · core, actor model
+│   ├── Vision (214)
+│   ├── Core Principles (412) · Headless-first, Plan before execute
+│   └── Architecture Overview (789) · go :42-68, mermaid :74-92
 ├── Components (3.2k)
-│   ├── Scheduler
-│   ├── Orchestrator
-│   └── Memory (RAG)
+│   ├── Scheduler (892) · note :118 Schedulers run in their own actor
+│   ├── Orchestrator (1.1k) · 2 tables :156 Name, :172 State
+│   └── Memory (RAG) (1.2k) · go :214-245, sql :250-268
 └── Security (1.4k)
-    └─ "SSH keys only", "Human gates"
+    └── (empty heading)
 ```
 
-### Section Filter
+Every section shows its token count plus a dense inline annotation of what's inside it. Code blocks, callouts, tables, and math blocks all carry `:line` jump targets.
 
-Zoom into a specific section:
+### Drilling into one construct type
+
+Want every Python code block? Every warning? Every table?
 
 ```bash
-docmap docs/API.md --section "Authentication"
+docmap file.md --type code --lang python
 ```
 
-### Expand Section
+```
+╭──── file.md — code blocks ────╮
+│    3 code blocks in 2 sections  │
+╰─────────────────────────────────╯
 
-See the actual content:
+Installation > Setup (214)
+  :34-41    python    
+
+Usage > Examples (1.1k)
+  :120-134  python    
+  :142-156  python    
+```
+
+Each hit carries the exact line range and breadcrumb. Drop that into a grep, an editor, or hand it to another agent.
+
+### What's at line N?
 
 ```bash
-docmap docs/API.md --expand "Authentication"
+docmap file.md --at 154
 ```
 
-### PDF Support
+```
+╭──── file.md — line 154 ────╮
+│          code_block           │
+╰──────────────────────────────╯
 
-Map PDF documents by their outline (table of contents):
+Section: Installation > Setup
+Node:    code L154-156  lang=python
+```
+
+### Changed since a git ref
 
 ```bash
-docmap report.pdf
+docmap README.md --since HEAD~10
 ```
 
 ```
-╭──────────────────── report.pdf ────────────────────╮
-│             Sections: 7 | ~16.9k tokens            │
-╰────────────────────────────────────────────────────╯
+╭──── README.md — since HEAD~10 ────╮
+│  49 changed lines across 8 sections  │
+╰─────────────────────────────────────╯
 
-└── Claude Code-Powered Writing Editor (9.1k)
-    ├── Introduction and Feasibility Overview (1.3k)
-    ├── Key Features and Benefits (1.3k)
-    ├── Designing the Interface (1.3k)
-    └── Development Steps (1.3k)
+docmap > Usage (110)
+  code L64-71  lang=bash
+
+docmap > PDF Support (231)
+  code L132-133  lang=bash
+  code L136-145  lang=(none)
 ```
 
-**Note:** For PDFs with outlines/bookmarks, docmap shows the document structure with estimated token distribution. For PDFs without outlines, it falls back to page-by-page structure. Scanned/image-only PDFs will show a page count but no text content.
+Uses `git diff --unified=0` under the hood.
 
-### References Mode
+### PDF support
 
-See how docs link to each other (like `codemap --deps`):
+PDFs with outlines show document structure; tokens are estimated. PDFs without outlines fall back to page-by-page. Scanned/image-only PDFs show a page count but no text.
+
+### YAML support
+
+YAML files map keys to sections with nested children. Sequences use `name`/`id`/`title` fields for titles when available.
+
+### References mode
+
+See how docs link to each other:
 
 ```bash
 docmap . --refs
 ```
 
-```
-╭─────────────────────── project/ ───────────────────────╮
-│              References: 53 links between docs         │
-╰────────────────────────────────────────────────────────╯
+## What docmap recognizes
 
-HUBS: docs/architecture.md (5←), docs/api.md (3←)
+Full CommonMark + GitHub Flavored Markdown + Obsidian extensions:
 
-Reference Flow:
-
-  README.md
-  ├──▶ docs/architecture.md
-  ├──▶ docs/api.md
-  └──▶ CHANGELOG.md
-
-  docs/architecture.md
-  ├──▶ docs/components.md
-  └──▶ docs/data-flow.md
-```
+- **Headings** — ATX and Setext (underline) style, all 6 levels
+- **Frontmatter** — YAML, TOML, JSON at file start
+- **Callouts** — GFM alerts: `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]`
+- **Tables** — with column alignment and inline content
+- **Code blocks** — fenced with language tag, indented, tilde-fenced, with attributes
+- **Lists & tasks** — ordered/unordered, nested, tight/loose, GFM task checkboxes
+- **Blockquotes** — plain, nested, lazy continuation
+- **Math** — inline `$…$`, block `$$…$$` and `\[…\]`
+- **Footnotes** — references and multi-paragraph definitions
+- **Definition lists** — Pandoc-style
+- **HTML blocks** — `<div>`, `<details>`, `<kbd>`, comments, entities
+- **Link references** — `[label]: url "title"`, reference-style links and images
+- **Autolinks** — angle-bracket URLs, GFM bare URLs, email addresses
+- **GFM extras** — `@mentions`, `#issues`, commit SHA autolinks, `:emoji:` shortcodes
+- **Obsidian** — `[[wiki links]]`, `[[Page|alias]]`, `[[Page#header]]`, `[[Page#^block]]`, `![[embeds]]` with sizing
 
 ## Why docmap?
 
 | Before | After |
 |--------|-------|
-| "Read this 100k token doc" | "Here's the structure, ask for what you need" |
-| Open 20 files to find something | See all sections at a glance |
-| Scroll through giant CHANGELOGs | Jump to the version you need |
-| Guess what's in each doc | Token counts show what's meaty |
+| "Read this 100k token doc" | `docmap --type code file.md` → 8 jump targets |
+| Open 20 files to find something | `docmap .` inventory header |
+| Scroll through giant CHANGELOGs | `--at 2400` → which section am I in? |
+| Guess what's in each doc | Every file has a one-line notable digest |
+| grep for "warning" in callouts | `--type callout --kind warning` |
 
-## Sister Tool
+## Sister tool
 
 docmap is the documentation companion to [codemap](https://github.com/JordanCoin/codemap):
 
@@ -193,32 +259,42 @@ docmap .    # doc structure
 
 Together: complete spatial awareness of any repository.
 
-## How It Works
+## How it works
 
-**Markdown:**
-1. **Parse** headings into a tree structure
-2. **Estimate** tokens per section (~4 chars/token)
-3. **Extract** key terms (bold text, inline code)
-4. **Render** as a navigable tree
+**Markdown:** parsed with [goldmark](https://github.com/yuin/goldmark) (CommonMark + GFM extensions) plus post-passes for math blocks, GFM callouts, Obsidian wiki links, HTML entities, `@mentions`, `#issue` refs, commit SHAs, and emoji shortcodes. The result is a typed AST with 40+ node kinds that the renderer compresses into the dense tree view.
 
-**PDF:**
-1. **Extract** outline/bookmarks if available, otherwise use pages
-2. **Parse** text content from each page
-3. **Estimate** tokens (~4 chars/token)
-4. **Render** as a navigable tree
+**PDF:** outline/bookmarks parsed by `ledongthuc/pdf`, falling back to per-page structure if no outline exists.
+
+**YAML:** parsed by `yaml.v3` with keys mapped to sections.
 
 No API calls. Just fast, local parsing.
 
-## Roadmap
+## JSON output
 
-Ideas for future versions:
+`docmap file.md --json` emits the full typed AST alongside the legacy sections tree:
 
-- **Depth control** (`--depth 2`) — Limit heading levels shown, e.g., only h1/h2
-- **Token budget mode** (`--budget 4000`) — Auto-select sections that fit within a token limit
-- **JSON output** (`--json`) — Machine-readable output for piping and parsing
-- **Section previews** — Show first ~100 tokens of each section inline
+```json
+{
+  "documents": [{
+    "filename": "file.md",
+    "summary": {
+      "callouts": 5, "tables": 4, "code_blocks": 8,
+      "tasks": 6, "tasks_checked": 3, "wiki_links": 4
+    },
+    "sections": [...],
+    "nodes": [
+      { "kind": "frontmatter", "format": "yaml", "raw": "..." },
+      { "kind": "heading", "level": 1, "title": "..." },
+      { "kind": "code_block", "language": "python",
+        "line_start": 154, "line_end": 156, "code": "..." },
+      { "kind": "callout", "variant": "warning",
+        "line_start": 228, "line_end": 230 }
+    ]
+  }]
+}
+```
 
-PRs welcome for any of these!
+Pipe it into `jq`, another tool, or hand it to an agent.
 
 ## Contributing
 

@@ -1,0 +1,33 @@
+{
+  "name": "docmap",
+  "owner": {
+    "name": "Jordan Coin Jackson",
+    "email": "jordan@jordancoin.com"
+  },
+  "metadata": {
+    "description": "Plugin marketplace for docmap — instant documentation structure for LLMs and humans.",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "docmap",
+      "source": "./plugins/docmap",
+      "description": "Navigate markdown, PDF, and YAML documentation structure without reading full files. Adds a /docmap skill that teaches Claude when and how to use the docmap CLI for agent-friendly doc exploration.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Jordan Coin Jackson"
+      },
+      "homepage": "https://github.com/JordanCoin/docmap",
+      "repository": "https://github.com/JordanCoin/docmap",
+      "license": "MIT",
+      "keywords": [
+        "documentation",
+        "markdown",
+        "ast",
+        "navigation",
+        "llm-tools"
+      ],
+      "category": "documentation"
+    }
+  ]
+}

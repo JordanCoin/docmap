@@ -1,6 +1,6 @@
-# Binary
-docmap
-docmap.exe
+# Binary (only the top-level built binary, not directories named "docmap")
+/docmap
+/docmap.exe
 
 # Test coverage
 coverage.out
@@ -22,3 +22,9 @@ dist/
 
 # Codemap
 .codemap/
+
+# Local agent/MCP tooling state (not part of the project source)
+.architect/
+.serena/
+.mcp.json
+firebase-debug.log

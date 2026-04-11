@@ -5,12 +5,246 @@ import (
 	"strings"
 )
 
-// Document represents a parsed markdown document
+// Parse parses markdown content into a Document using goldmark (CommonMark +
+// GFM + Obsidian extensions) and derives the legacy Section tree and
+// cross-file Reference list from the resulting typed AST.
+func Parse(content string) *Document {
+	doc := &Document{}
+	source := []byte(content)
+
+	// Build the typed AST first; everything below is derived from it.
+	doc.Nodes = parseWithGoldmark(source)
+
+	// Derive the legacy heading-only Section tree.
+	doc.Sections, doc.TotalTokens = sectionsFromNodes(doc.Nodes)
+
+	// Collect cross-file .md links from the AST for the references view.
+	doc.References = referencesFromNodes(doc.Nodes)
+
+	return doc
+}
+
+// sectionsFromNodes flattens the top-level AST in document order, turning
+// every Heading into a Section and attaching the blocks that follow it
+// (until the next heading) as that section's content, notables, and stats.
+func sectionsFromNodes(nodes []Node) ([]*Section, int) {
+	var all []*Section
+	var current *Section
+	var contentBuf strings.Builder
+
+	finalize := func(endLine int) {
+		if current == nil {
+			return
+		}
+		raw := strings.TrimSpace(contentBuf.String())
+		current.Content = raw
+		current.KeyTerms = extractKeyTerms(raw)
+		if current.LineEnd == 0 {
+			current.LineEnd = endLine
+		}
+		contentBuf.Reset()
+	}
+
+	for _, n := range nodes {
+		if h, ok := n.(*Heading); ok {
+			finalize(h.LineStart() - 1)
+			current = &Section{
+				Level:     h.Level,
+				Title:     h.Title,
+				LineStart: h.LineStart(),
+				Tokens:    h.Tokens(),
+			}
+			all = append(all, current)
+			continue
+		}
+		if current == nil {
+			// Blocks before the first heading (frontmatter, intro paragraphs)
+			// are ignored by the legacy Section view.
+			continue
+		}
+		contentBuf.WriteString(nodeRaw(n))
+		contentBuf.WriteString("\n")
+		current.Tokens += n.Tokens()
+		current.LineEnd = n.LineEnd()
+
+		nots, stats := collectNotables(n)
+		current.Notables = append(current.Notables, nots...)
+		current.Stats.add(stats)
+	}
+	finalize(0)
+
+	roots := buildTree(all)
+
+	// Parent sections' LineEnd only reflects their own direct content,
+	// stopping where the first child subsection begins. Extend LineEnd so
+	// each section covers its entire subtree — this makes AtLine and
+	// section-bounded searches work correctly.
+	for _, r := range roots {
+		extendSectionRange(r)
+	}
+
+	total := 0
+	for _, s := range all {
+		total += s.Tokens
+	}
+	return roots, total
+}
+
+// extendSectionRange recursively pulls up the deepest LineEnd from a
+// section's descendants so parents enclose every child.
+func extendSectionRange(s *Section) {
+	for _, child := range s.Children {
+		extendSectionRange(child)
+		if child.LineEnd > s.LineEnd {
+			s.LineEnd = child.LineEnd
+		}
+	}
+}
+
+// add accumulates counts from other into s.
+func (s *NotableStats) add(other NotableStats) {
+	s.Tasks += other.Tasks
+	s.TasksChecked += other.TasksChecked
+	s.WikiLinks += other.WikiLinks
+	s.WikiEmbeds += other.WikiEmbeds
+	s.Mentions += other.Mentions
+	s.IssueRefs += other.IssueRefs
+	s.CommitRefs += other.CommitRefs
+	s.Emojis += other.Emojis
+}
+
+// collectNotables walks root and classifies descendants into per-instance
+// notables (returned as a slice) and aggregated counts (stats). Callouts,
+// tables, and definition lists are treated as atomic units: their children
+// are not traversed, so a wiki link inside a callout won't be counted twice.
+func collectNotables(root Node) ([]Node, NotableStats) {
+	var notables []Node
+	var stats NotableStats
+
+	Walk(root, func(n Node) bool {
+		switch v := n.(type) {
+		case *Callout:
+			notables = append(notables, v)
+			return false
+		case *Table:
+			notables = append(notables, v)
+			return false
+		case *CodeBlock:
+			notables = append(notables, v)
+			return false
+		case *MathBlock:
+			notables = append(notables, v)
+			return false
+		case *HTMLBlock:
+			notables = append(notables, v)
+			return false
+		case *FootnoteDef:
+			notables = append(notables, v)
+			return false
+		case *DefinitionList:
+			notables = append(notables, v)
+			return false
+		case *LinkRefDef:
+			notables = append(notables, v)
+			return false
+		case *TaskItem:
+			stats.Tasks++
+			if v.Checked {
+				stats.TasksChecked++
+			}
+			return true
+		case *WikiLink:
+			stats.WikiLinks++
+			return true
+		case *WikiEmbed:
+			stats.WikiEmbeds++
+			return true
+		case *Mention:
+			stats.Mentions++
+			return true
+		case *IssueRef:
+			stats.IssueRefs++
+			return true
+		case *CommitRef:
+			stats.CommitRefs++
+			return true
+		case *Emoji:
+			stats.Emojis++
+			return true
+		}
+		return true
+	})
+	return notables, stats
+}
+
+// referencesFromNodes walks the AST and returns every Link whose target is
+// a local .md file (with any #anchor stripped).
+func referencesFromNodes(nodes []Node) []Reference {
+	var out []Reference
+	for _, root := range nodes {
+		Walk(root, func(n Node) bool {
+			l, ok := n.(*Link)
+			if !ok {
+				return true
+			}
+			target := l.URL
+			if idx := strings.Index(target, "#"); idx >= 0 {
+				target = target[:idx]
+			}
+			if !strings.HasSuffix(target, ".md") {
+				return true
+			}
+			out = append(out, Reference{
+				Text:   l.Text,
+				Target: target,
+				Line:   l.LineStart(),
+			})
+			return true
+		})
+	}
+	return out
+}
+
+// nodeRaw returns the original markdown source fragment for a node so the
+// legacy key-term extractor can still scan for **bold** and `code` markers.
+// For container nodes it concatenates the raw source of each descendant.
+func nodeRaw(n Node) string {
+	switch v := n.(type) {
+	case *Paragraph:
+		return v.Raw
+	case *CodeBlock:
+		return v.Code
+	case *MathBlock:
+		return v.TeX
+	case *HTMLBlock:
+		return v.Raw
+	case *Frontmatter:
+		return v.Raw
+	case *Heading:
+		return v.Title
+	}
+	// Containers: concatenate children's raw text.
+	var b strings.Builder
+	for _, child := range n.Children() {
+		b.WriteString(nodeRaw(child))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// Document represents a parsed markdown document.
+//
+// The legacy Sections tree is heading-only and is what the renderer
+// currently consumes. Nodes holds the richer typed AST produced by the
+// new goldmark-based parser (frontmatter, tables, callouts, code blocks,
+// Obsidian wiki links, etc.) once it lands. Both exist side-by-side
+// during the migration so existing callers keep working.
 type Document struct {
 	Filename    string
 	TotalTokens int
 	Sections    []*Section
 	References  []Reference // Links to other .md files
+	Nodes       []Node      // Typed AST (populated by the new parser)
 }
 
 // Reference represents a link to another markdown file
@@ -20,7 +254,17 @@ type Reference struct {
 	Line   int    // Line number where reference appears
 }
 
-// Section represents a heading and its content
+// Section represents a heading and the content that follows it up to the
+// next same-or-higher heading.
+//
+// Notables lists the discoverable block nodes inside this section that an
+// agent might want to jump to directly — callouts, tables, code blocks,
+// math blocks, HTML blocks, footnote definitions, definition lists. It is
+// populated one-per-instance so the renderer can print each as its own line.
+//
+// Stats aggregates counts of things that would be noisy per-instance
+// (task list items, Obsidian wiki links, Obsidian embeds). They are
+// rendered as a single summary line per section.
 type Section struct {
 	Level     int // 1 = #, 2 = ##, etc.
 	Title     string
@@ -31,85 +275,26 @@ type Section struct {
 	Parent    *Section
 	LineStart int
 	LineEnd   int
+	Notables  []Node
+	Stats     NotableStats
+}
+
+// NotableStats aggregates counts of constructs that would be noisy if
+// listed per-instance under a section.
+type NotableStats struct {
+	Tasks        int
+	TasksChecked int
+	WikiLinks    int
+	WikiEmbeds   int
+	Mentions     int
+	IssueRefs    int
+	CommitRefs   int
+	Emojis       int
 }
 
 // Token estimation: ~4 chars per token (rough approximation)
 func estimateTokens(s string) int {
 	return len(s) / 4
-}
-
-// Parse parses markdown content into a Document structure
-func Parse(content string) *Document {
-	lines := strings.Split(content, "\n")
-	doc := &Document{}
-
-	headingRe := regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
-	// Match markdown links to .md files: [text](path.md) or [text](path.md#anchor)
-	linkRe := regexp.MustCompile(`\[([^\]]+)\]\(([^)]+\.md(?:#[^)]*)?)\)`)
-
-	var allSections []*Section
-	var currentSection *Section
-	var contentBuilder strings.Builder
-
-	for i, line := range lines {
-		// Extract markdown links to .md files
-		for _, match := range linkRe.FindAllStringSubmatch(line, -1) {
-			target := match[2]
-			// Remove anchor if present
-			if idx := strings.Index(target, "#"); idx != -1 {
-				target = target[:idx]
-			}
-			doc.References = append(doc.References, Reference{
-				Text:   match[1],
-				Target: target,
-				Line:   i + 1,
-			})
-		}
-
-		if matches := headingRe.FindStringSubmatch(line); matches != nil {
-			// Save previous section's content
-			if currentSection != nil {
-				currentSection.Content = strings.TrimSpace(contentBuilder.String())
-				currentSection.Tokens = estimateTokens(currentSection.Content)
-				currentSection.KeyTerms = extractKeyTerms(currentSection.Content)
-				currentSection.LineEnd = i - 1
-			}
-
-			level := len(matches[1])
-			title := strings.TrimSpace(matches[2])
-
-			section := &Section{
-				Level:     level,
-				Title:     title,
-				LineStart: i + 1,
-			}
-
-			allSections = append(allSections, section)
-			currentSection = section
-			contentBuilder.Reset()
-		} else if currentSection != nil {
-			contentBuilder.WriteString(line)
-			contentBuilder.WriteString("\n")
-		}
-	}
-
-	// Finalize last section
-	if currentSection != nil {
-		currentSection.Content = strings.TrimSpace(contentBuilder.String())
-		currentSection.Tokens = estimateTokens(currentSection.Content)
-		currentSection.KeyTerms = extractKeyTerms(currentSection.Content)
-		currentSection.LineEnd = len(lines)
-	}
-
-	// Build tree structure
-	doc.Sections = buildTree(allSections)
-
-	// Calculate total tokens
-	for _, s := range allSections {
-		doc.TotalTokens += s.Tokens
-	}
-
-	return doc
 }
 
 // buildTree organizes flat sections into a tree based on heading levels
@@ -208,6 +393,65 @@ func findSection(sections []*Section, name string) *Section {
 		}
 	}
 	return nil
+}
+
+// Summary walks the typed AST once and returns inventory counts for every
+// notable construct in the document. Used by the renderer to draw the
+// file header's content summary.
+func (d *Document) Summary() ContentSummary {
+	var s ContentSummary
+	for _, root := range d.Nodes {
+		Walk(root, func(n Node) bool {
+			switch v := n.(type) {
+			case *Callout:
+				s.Callouts++
+				return false
+			case *Table:
+				s.Tables++
+				return false
+			case *CodeBlock:
+				s.CodeBlocks++
+				return false
+			case *MathBlock:
+				s.MathBlocks++
+				return false
+			case *HTMLBlock:
+				raw := strings.TrimSpace(v.Raw)
+				if !strings.HasPrefix(raw, "<!--") && !strings.HasPrefix(raw, "</") {
+					s.HTMLBlocks++
+				}
+				return false
+			case *FootnoteDef:
+				s.Footnotes++
+				return false
+			case *DefinitionList:
+				s.DefLists++
+				return false
+			case *LinkRefDef:
+				s.LinkRefDefs++
+				return false
+			case *TaskItem:
+				s.Tasks++
+				if v.Checked {
+					s.TasksChecked++
+				}
+			case *WikiLink:
+				s.WikiLinks++
+			case *WikiEmbed:
+				s.WikiEmbeds++
+			case *Mention:
+				s.Mentions++
+			case *IssueRef:
+				s.IssueRefs++
+			case *CommitRef:
+				s.CommitRefs++
+			case *Emoji:
+				s.Emojis++
+			}
+			return true
+		})
+	}
+	return s
 }
 
 // GetAllSections returns a flat list of all sections

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/JordanCoin/docmap/parser"
@@ -35,16 +36,67 @@ type JSONOutput struct {
 type JSONDocument struct {
 	Filename   string        `json:"filename"`
 	Tokens     int           `json:"tokens"`
+	Summary    JSONSummary   `json:"summary"`
 	Sections   []JSONSection `json:"sections"`
+	Nodes      []JSONNode    `json:"nodes,omitempty"`
 	References []JSONRef     `json:"references,omitempty"`
 }
 
+// JSONSummary mirrors parser.ContentSummary for JSON consumers.
+type JSONSummary struct {
+	Callouts     int `json:"callouts,omitempty"`
+	Tables       int `json:"tables,omitempty"`
+	CodeBlocks   int `json:"code_blocks,omitempty"`
+	MathBlocks   int `json:"math_blocks,omitempty"`
+	HTMLBlocks   int `json:"html_blocks,omitempty"`
+	Footnotes    int `json:"footnotes,omitempty"`
+	DefLists     int `json:"definition_lists,omitempty"`
+	LinkRefDefs  int `json:"link_ref_defs,omitempty"`
+	Tasks        int `json:"tasks,omitempty"`
+	TasksChecked int `json:"tasks_checked,omitempty"`
+	WikiLinks    int `json:"wiki_links,omitempty"`
+	WikiEmbeds   int `json:"wiki_embeds,omitempty"`
+	Mentions     int `json:"mentions,omitempty"`
+	IssueRefs    int `json:"issue_refs,omitempty"`
+	CommitRefs   int `json:"commit_refs,omitempty"`
+	Emojis       int `json:"emojis,omitempty"`
+}
+
 type JSONSection struct {
-	Level    int           `json:"level"`
-	Title    string        `json:"title"`
-	Tokens   int           `json:"tokens"`
-	KeyTerms []string      `json:"key_terms,omitempty"`
-	Children []JSONSection `json:"children,omitempty"`
+	Level     int           `json:"level"`
+	Title     string        `json:"title"`
+	Tokens    int           `json:"tokens"`
+	LineStart int           `json:"line_start,omitempty"`
+	LineEnd   int           `json:"line_end,omitempty"`
+	KeyTerms  []string      `json:"key_terms,omitempty"`
+	Notables  []JSONNode    `json:"notables,omitempty"`
+	Children  []JSONSection `json:"children,omitempty"`
+}
+
+// JSONNode is the typed-AST-aware serialization format. `Kind` identifies
+// the node type (e.g. "code_block", "callout"); remaining fields are
+// populated per kind. Agents can switch on Kind to deserialize.
+type JSONNode struct {
+	Kind      string     `json:"kind"`
+	LineStart int        `json:"line_start,omitempty"`
+	LineEnd   int        `json:"line_end,omitempty"`
+	Tokens    int        `json:"tokens,omitempty"`
+	Title     string     `json:"title,omitempty"`    // Heading
+	Level     int        `json:"level,omitempty"`    // Heading
+	Language  string     `json:"language,omitempty"` // CodeBlock
+	Code      string     `json:"code,omitempty"`     // CodeBlock
+	Variant   string     `json:"variant,omitempty"`  // Callout
+	Headers   []string   `json:"headers,omitempty"`  // Table
+	Aligns    []string   `json:"aligns,omitempty"`   // Table
+	TeX       string     `json:"tex,omitempty"`      // MathBlock / InlineMath
+	ID        string     `json:"id,omitempty"`       // FootnoteDef
+	Label     string     `json:"label,omitempty"`    // LinkRefDef
+	URL       string     `json:"url,omitempty"`      // LinkRefDef / Link
+	Checked   *bool      `json:"checked,omitempty"`  // TaskItem
+	Raw       string     `json:"raw,omitempty"`      // HTMLBlock / Frontmatter
+	Format    string     `json:"format,omitempty"`   // Frontmatter
+	Target    string     `json:"target,omitempty"`   // WikiLink / WikiEmbed
+	Children  []JSONNode `json:"children,omitempty"`
 }
 
 type JSONRef struct {
@@ -77,6 +129,11 @@ func main() {
 	var sectionFilter string
 	var expandSection string
 	var searchQuery string
+	var typeFilter string
+	var langFilter string
+	var kindFilter string
+	var atLine int
+	var sinceRef string
 	var showRefs bool
 	var jsonMode bool
 	var stdinMode bool
@@ -97,6 +154,34 @@ func main() {
 		case "--search":
 			if i+1 < len(os.Args) {
 				searchQuery = os.Args[i+1]
+				i++
+			}
+		case "--type", "-t":
+			if i+1 < len(os.Args) {
+				typeFilter = os.Args[i+1]
+				i++
+			}
+		case "--lang":
+			if i+1 < len(os.Args) {
+				langFilter = os.Args[i+1]
+				i++
+			}
+		case "--kind":
+			if i+1 < len(os.Args) {
+				kindFilter = os.Args[i+1]
+				i++
+			}
+		case "--at":
+			if i+1 < len(os.Args) {
+				n, err := strconv.Atoi(os.Args[i+1])
+				if err == nil {
+					atLine = n
+				}
+				i++
+			}
+		case "--since":
+			if i+1 < len(os.Args) {
+				sinceRef = os.Args[i+1]
 				i++
 			}
 		case "--refs", "-r":
@@ -242,6 +327,13 @@ func main() {
 			outputJSON([]*parser.Document{doc}, absPath)
 		} else if searchQuery != "" {
 			render.SearchResults([]*parser.Document{doc}, searchQuery)
+		} else if sinceRef != "" {
+			changed, _ := parser.ChangedLines(target, sinceRef)
+			render.ChangedSince(doc, changed, sinceRef)
+		} else if atLine > 0 {
+			render.AtLine(doc, atLine)
+		} else if typeFilter != "" {
+			render.TypeFilterFiltered(doc, typeFilter, langFilter, kindFilter)
 		} else if expandSection != "" {
 			render.ExpandSection(doc, expandSection)
 		} else if sectionFilter != "" {
@@ -326,10 +418,11 @@ func outputJSON(docs []*parser.Document, root string) {
 		jsonDoc := JSONDocument{
 			Filename: doc.Filename,
 			Tokens:   doc.TotalTokens,
+			Summary:  convertSummary(doc.Summary()),
 			Sections: convertSections(doc.Sections),
+			Nodes:    convertNodeList(doc.Nodes),
 		}
 
-		// Add references
 		for _, ref := range doc.References {
 			jsonDoc.References = append(jsonDoc.References, JSONRef{
 				Text:   ref.Text,
@@ -345,19 +438,108 @@ func outputJSON(docs []*parser.Document, root string) {
 	json.NewEncoder(os.Stdout).Encode(output)
 }
 
+func convertSummary(s parser.ContentSummary) JSONSummary {
+	return JSONSummary{
+		Callouts:     s.Callouts,
+		Tables:       s.Tables,
+		CodeBlocks:   s.CodeBlocks,
+		MathBlocks:   s.MathBlocks,
+		HTMLBlocks:   s.HTMLBlocks,
+		Footnotes:    s.Footnotes,
+		DefLists:     s.DefLists,
+		LinkRefDefs:  s.LinkRefDefs,
+		Tasks:        s.Tasks,
+		TasksChecked: s.TasksChecked,
+		WikiLinks:    s.WikiLinks,
+		WikiEmbeds:   s.WikiEmbeds,
+		Mentions:     s.Mentions,
+		IssueRefs:    s.IssueRefs,
+		CommitRefs:   s.CommitRefs,
+		Emojis:       s.Emojis,
+	}
+}
+
 func convertSections(sections []*parser.Section) []JSONSection {
 	var result []JSONSection
 	for _, s := range sections {
 		js := JSONSection{
-			Level:    s.Level,
-			Title:    s.Title,
-			Tokens:   s.Tokens,
-			KeyTerms: s.KeyTerms,
-			Children: convertSections(s.Children),
+			Level:     s.Level,
+			Title:     s.Title,
+			Tokens:    s.Tokens,
+			LineStart: s.LineStart,
+			LineEnd:   s.LineEnd,
+			KeyTerms:  s.KeyTerms,
+			Notables:  convertNodeList(s.Notables),
+			Children:  convertSections(s.Children),
 		}
 		result = append(result, js)
 	}
 	return result
+}
+
+func convertNodeList(nodes []parser.Node) []JSONNode {
+	var out []JSONNode
+	for _, n := range nodes {
+		out = append(out, convertNode(n))
+	}
+	return out
+}
+
+// convertNode serializes one typed AST node into JSON-friendly form.
+// Only fields relevant to the kind are populated; omitempty keeps the
+// output compact.
+func convertNode(n parser.Node) JSONNode {
+	j := JSONNode{
+		Kind:      string(n.Kind()),
+		LineStart: n.LineStart(),
+		LineEnd:   n.LineEnd(),
+		Tokens:    n.Tokens(),
+	}
+	switch v := n.(type) {
+	case *parser.Heading:
+		j.Title = v.Title
+		j.Level = v.Level
+	case *parser.CodeBlock:
+		j.Language = v.Language
+		j.Code = v.Code
+	case *parser.Callout:
+		j.Variant = string(v.Variant)
+	case *parser.Table:
+		j.Headers = v.Headers
+		for _, a := range v.Aligns {
+			j.Aligns = append(j.Aligns, string(a))
+		}
+	case *parser.MathBlock:
+		j.TeX = v.TeX
+	case *parser.InlineMath:
+		j.TeX = v.TeX
+	case *parser.FootnoteDef:
+		j.ID = v.ID
+	case *parser.LinkRefDef:
+		j.Label = v.Label
+		j.URL = v.URL
+	case *parser.Link:
+		j.URL = v.URL
+		j.Title = v.Text
+	case *parser.TaskItem:
+		checked := v.Checked
+		j.Checked = &checked
+	case *parser.HTMLBlock:
+		j.Raw = v.Raw
+	case *parser.Frontmatter:
+		j.Raw = v.Raw
+		j.Format = string(v.Format)
+	case *parser.WikiLink:
+		j.Target = v.Target
+	case *parser.WikiEmbed:
+		j.Target = v.Target
+	}
+	// Recurse into children for container nodes so the JSON tree mirrors
+	// the in-memory AST.
+	for _, c := range n.Children() {
+		j.Children = append(j.Children, convertNode(c))
+	}
+	return j
 }
 
 func printUsage() {
@@ -384,6 +566,13 @@ Flags:
   --search <query>       Search sections across all files
   -s, --section <name>   Filter to a specific section
   -e, --expand <name>    Show full content of a section
+  -t, --type <kind>      Drill into one construct: code, callout, table, math,
+                         footnote, deflist, linkref, html, task, wiki, embed,
+                         mention, issue, sha, emoji
+  --lang <name>          Sub-filter for --type code (e.g. --type code --lang python)
+  --kind <name>          Sub-filter for --type callout (e.g. --kind warning)
+  --at <line>            Show what construct lives at a specific line number
+  --since <ref>          Show constructs on lines changed since a git ref
   -r, --refs             Show cross-references between markdown files
   -j, --json             Output JSON format
   -v, --version          Print version
