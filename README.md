@@ -114,6 +114,7 @@ docmap file.md --search "auth"      # Search titles, content, and notables
 docmap dirA dirB --search "auth" --compact  # Search multiple roots
 docmap docs/ --terms-file queries.txt --compact # One query per line
 docmap . --refs                     # Cross-references between docs
+docmap . --all                      # Include node_modules, vendor and .gitignore'd files
 docmap file.md --json               # Full typed AST as JSON
 ```
 

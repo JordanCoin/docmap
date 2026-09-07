@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -138,6 +139,7 @@ func main() {
 	var showRefs bool
 	var jsonMode bool
 	var stdinMode bool
+	var walkAll bool
 	var target string
 	var targets []string
 	var termsFile string
@@ -205,6 +207,8 @@ func main() {
 			stdinMode = true
 		case "--compact":
 			compact = true
+		case "--all":
+			walkAll = true
 		default:
 			targets = append(targets, os.Args[i])
 		}
@@ -292,7 +296,7 @@ func main() {
 	if len(targets) > 1 {
 		var docs []*parser.Document
 		for _, path := range targets {
-			parsed, err := parsePath(path)
+			parsed, err := parsePath(path, walkAll)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -316,7 +320,7 @@ func main() {
 
 	if info.IsDir() {
 		// Multi-file mode: find all .md files
-		docs := parseDirectory(target)
+		docs := parseDirectoryOpts(target, walkAll)
 		if len(docs) == 0 {
 			fmt.Println("No markdown, PDF, or YAML files found")
 			os.Exit(1)
@@ -362,14 +366,60 @@ func main() {
 	}
 }
 
+// skipDirs are dependency and build caches that never hold project docs.
+// Walking node_modules alone turns a 90-file repo into 1,700 "docs" (#4).
+var skipDirs = map[string]bool{
+	"node_modules": true,
+	".git":         true,
+	"vendor":       true,
+	".venv":        true,
+	"venv":         true,
+	"__pycache__":  true,
+	".next":        true,
+	".cache":       true,
+}
+
+// gitTrackedSet returns the set of files git considers part of the project
+// under dir (tracked plus untracked-but-not-ignored), keyed by path relative
+// to dir. It returns nil when dir is not inside a git work tree or git is not
+// available, in which case callers fall back to skipDirs only.
+func gitTrackedSet(dir string) map[string]bool {
+	cmd := exec.Command("git", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	set := make(map[string]bool)
+	for _, rel := range strings.Split(string(out), "\x00") {
+		if rel != "" {
+			set[filepath.ToSlash(rel)] = true
+		}
+	}
+	return set
+}
+
 func parseDirectory(dir string) []*parser.Document {
+	return parseDirectoryOpts(dir, false)
+}
+
+// parseDirectoryOpts walks dir for markdown, PDF and YAML documents. Unless
+// all is true it skips dependency directories and honors .gitignore.
+func parseDirectoryOpts(dir string, all bool) []*parser.Document {
 	var docs []*parser.Document
+
+	var tracked map[string]bool
+	if !all {
+		tracked = gitTrackedSet(dir)
+	}
 
 	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		if info.IsDir() {
+			if !all && path != dir && skipDirs[info.Name()] {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -386,6 +436,14 @@ func parseDirectory(dir string) []*parser.Document {
 		base := filepath.Base(path)
 		if strings.HasPrefix(base, ".") {
 			return nil
+		}
+
+		// Honor .gitignore: inside a git work tree only project files count.
+		if tracked != nil {
+			rel, relErr := filepath.Rel(dir, path)
+			if relErr == nil && !tracked[filepath.ToSlash(rel)] {
+				return nil
+			}
 		}
 
 		var doc *parser.Document
@@ -426,13 +484,13 @@ func parseDirectory(dir string) []*parser.Document {
 	return docs
 }
 
-func parsePath(path string) ([]*parser.Document, error) {
+func parsePath(path string, all bool) ([]*parser.Document, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
 	if info.IsDir() {
-		return parseDirectory(path), nil
+		return parseDirectoryOpts(path, all), nil
 	}
 	doc, err := parseSingleFile(path)
 	if err != nil {
@@ -681,6 +739,8 @@ Examples:
 
 Flags:
   --stdin                Read JSON file manifest from stdin (no filesystem access needed)
+  --all                  Walk everything: include node_modules, vendor and
+                         .gitignore'd files (skipped by default)
   --search <query>       Search sections across all files
   --terms-file <path>     Run one search query per non-comment, non-blank line
   --compact               Search output as one "file > section" line per hit
