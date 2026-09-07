@@ -1,0 +1,4 @@
+{
+  "name": "docmap",
+  "install": "go mod download && go build -o docmap ."
+}
