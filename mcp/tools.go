@@ -262,9 +262,9 @@ func handleSince(_ context.Context, _ *mcpsdk.CallToolRequest, in sinceInput) (*
 		out.Documents = append(out.Documents, jsonDocument{
 			Filename: doc.Filename, Change: ch, OldPath: oldPath,
 			ChangedLines: sortedLines(changed), Tokens: doc.TotalTokens,
-			Summary: convertSummary(doc.Summary()),
+			Summary:  convertSummary(doc.Summary()),
 			Sections: convertSectionsSince(doc.Sections, changed),
-			Nodes: convertNodesSince(doc.Nodes, changed),
+			Nodes:    convertNodesSince(doc.Nodes, changed),
 		})
 		out.TotalTokens += doc.TotalTokens
 		seen[filepath.ToSlash(doc.Filename)] = true
