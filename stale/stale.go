@@ -262,6 +262,12 @@ func checkPaths(file, section, text string, ctx *checkCtx, docDir string) []Find
 		if pathExists(tick, ctx, docDir) {
 			continue
 		}
+		// Cross-ecosystem docs often mention optional lockfiles/stack markers
+		// (e.g. Cargo.toml in a Go repo). Only flag those when the stack has
+		// evidence at the repo root.
+		if skipOptionalStackPath(tick, ctx) {
+			continue
+		}
 		out = append(out, Finding{
 			File:    file,
 			Section: section,
@@ -270,6 +276,56 @@ func checkPaths(file, section, text string, ctx *checkCtx, docDir string) []Find
 		})
 	}
 	return out
+}
+
+// optionalStackEvidence maps a stack/lockfile basename to root markers that
+// indicate the ecosystem is actually present in this repo.
+var optionalStackEvidence = map[string][]string{
+	"Cargo.toml":        {"Cargo.toml", "Cargo.lock"},
+	"Cargo.lock":        {"Cargo.toml", "Cargo.lock"},
+	"package.json":      {"package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"},
+	"package-lock.json": {"package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"},
+	"yarn.lock":         {"package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"},
+	"pnpm-lock.yaml":    {"package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"},
+	"Pipfile":           {"Pipfile", "Pipfile.lock", "poetry.lock", "pyproject.toml", "requirements.txt"},
+	"poetry.lock":       {"Pipfile", "Pipfile.lock", "poetry.lock", "pyproject.toml", "requirements.txt"},
+	"Gemfile":           {"Gemfile", "Gemfile.lock"},
+	"composer.json":     {"composer.json", "composer.lock"},
+	// Go — also treat root *.go as evidence (see skipOptionalStackPath).
+	"go.mod": {"go.mod", "go.sum"},
+	"go.sum": {"go.mod", "go.sum"},
+}
+
+// skipOptionalStackPath returns true when raw's basename is a known optional
+// stack/lockfile and none of that stack's evidence files exist under Root or
+// repoRoot. For go.mod/go.sum, root *.go files also count as evidence so a Go
+// repo still flags a truly missing go.mod.
+func skipOptionalStackPath(raw string, ctx *checkCtx) bool {
+	base := filepath.Base(filepath.FromSlash(strings.TrimSpace(raw)))
+	evidence, ok := optionalStackEvidence[base]
+	if !ok {
+		return false
+	}
+	roots := []string{ctx.opt.Root}
+	if ctx.repoRoot != "" && ctx.repoRoot != ctx.opt.Root {
+		roots = append(roots, ctx.repoRoot)
+	}
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		for _, ev := range evidence {
+			if cachedStat(ctx, filepath.Join(root, ev)) {
+				return false
+			}
+		}
+		if base == "go.mod" || base == "go.sum" {
+			if matches, _ := filepath.Glob(filepath.Join(root, "*.go")); len(matches) > 0 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func pathExists(raw string, ctx *checkCtx, docDir string) bool {
@@ -640,10 +696,12 @@ func checkEnvKeys(file, section, text string, cfg configIndex) []Finding {
 
 func skipEnvKey(k string) bool {
 	switch k {
-	case "HTTP", "HTTPS", "JSON", "YAML", "URL", "API", "CLI", "GPU", "CPU", "README", "LICENSE", "CI":
+	case "HTTP", "HTTPS", "JSON", "YAML", "URL", "API", "CLI", "GPU", "CPU", "README", "LICENSE", "CI",
+		"NODE_ENV", "PATH", "HOME", "USER", "TERM", "SHELL":
 		return true
 	}
-	if strings.HasPrefix(k, "GITHUB_") || strings.HasPrefix(k, "RUNNER_") {
+	if strings.HasPrefix(k, "GITHUB_") || strings.HasPrefix(k, "RUNNER_") ||
+		strings.HasPrefix(k, "INPUT_") || strings.HasPrefix(k, "ACTIONS_") {
 		return true
 	}
 	return false

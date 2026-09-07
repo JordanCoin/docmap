@@ -712,7 +712,7 @@ func changeStatusByPath(root, ref string) map[string]parser.PathChange {
 }
 
 func mentionPathsFromGit(root, ref string) []string {
-	changes, err := parser.ChangedPaths(root, ref)
+	changes, err := parser.ChangedPathsAll(root, ref)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
