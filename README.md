@@ -102,7 +102,8 @@ docmap config.yaml                  # YAML file structure
 docmap README.md --section "API"    # Filter to section
 docmap README.md --expand "API"     # Raw section source with file:L-L
 docmap . --brief                    # Session start: counts + recently changed docs
-docmap . --mentions parser/git.go   # Sections that mention a changed path
+docmap . --stale                    # Flag stale path/binary/date/env claims
+docmap . --stale --remote --json    # Also check URLs/config values (network)
 
 docmap file.md --type code          # List every code block
 docmap file.md --type code --lang python   # Only Python code blocks
@@ -219,6 +220,18 @@ docmap > PDF Support (231)
 ```
 
 Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed, lists `deleted:` / `renamed:` for docs that moved since the ref, and ignores non-doc paths. Binary docs (e.g. PDFs) light up as fully changed. Combine with `--json` to get `changed_lines`, `change` (`A`/`M`/`D`/`R`), and `old_path` for renames. `docmap . --mentions --since HEAD` uses git's changed paths (including deletes) as the mention needles.
+
+### Stale claims
+
+```bash
+docmap . --stale
+docmap . --stale --days 30 --check-flags
+docmap . --stale --remote --allow-domains example.com,github.com --json
+```
+
+Local checks (zero network): missing backticked paths, binaries not on `PATH`, status-heading dates older than `--days` (default 90), and `$ENV` keys absent from `.env.example` / compose / config files.
+
+`--remote` adds HEAD checks for http(s) URLs, `tool 1.2.3` vs `tool --version`, and `KEY=value` claims that disagree with root config. Output is `file > section: reason` plus a count; `--json` emits the finding array. `--brief` includes a one-line `stale: N` summary.
 
 ### PDF support
 

@@ -139,7 +139,7 @@ func TestOutputBriefCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	outputBrief(docs, dir)
+	outputBrief(docs, dir, 0)
 	w.Close()
 	os.Stdout = old
 	buf := make([]byte, 4096)
