@@ -441,22 +441,22 @@ func parseCommand(tick string) (bin string, flags []string) {
 	return bin, flags
 }
 
+var likelyCLIBins = map[string]struct{}{
+	"git": {}, "go": {}, "npm": {}, "npx": {}, "yarn": {}, "pnpm": {}, "pip": {}, "pip3": {}, "python": {}, "python3": {},
+	"node": {}, "ruby": {}, "cargo": {}, "rustc": {}, "docker": {}, "docker-compose": {}, "kubectl": {}, "helm": {},
+	"make": {}, "cmake": {}, "curl": {}, "wget": {}, "jq": {}, "rg": {}, "ripgrep": {}, "fd": {}, "sed": {}, "awk": {}, "grep": {},
+	"gh": {}, "aws": {}, "gcloud": {}, "az": {}, "terraform": {}, "ansible": {}, "brew": {}, "apt": {}, "yum": {}, "pacman": {},
+	"systemctl": {}, "ssh": {}, "scp": {}, "rsync": {}, "tar": {}, "zip": {}, "unzip": {}, "openssl": {}, "sqlite3": {},
+	"psql": {}, "mysql": {}, "redis-cli": {}, "mongosh": {}, "firebase": {}, "vercel": {}, "netlify": {}, "wrangler": {},
+	"docmap": {}, "codemap": {}, "eslint": {}, "prettier": {}, "tsc": {}, "webpack": {}, "vite": {}, "next": {},
+	"poetry": {}, "uv": {}, "bun": {}, "deno": {}, "java": {}, "javac": {}, "mvn": {}, "gradle": {}, "dotnet": {}, "swift": {},
+	"xcodebuild": {}, "pod": {}, "flutter": {}, "dart": {}, "php": {}, "composer": {}, "lua": {}, "perl": {}, "R": {},
+	"bazel": {}, "ninja": {}, "meson": {}, "pkg-config": {}, "clang": {}, "gcc": {}, "g++": {}, "lldb": {}, "gdb": {},
+}
+
 func likelyCLI(bin string) bool {
-	switch strings.ToLower(bin) {
-	case "git", "go", "npm", "npx", "yarn", "pnpm", "pip", "pip3", "python", "python3",
-		"node", "ruby", "cargo", "rustc", "docker", "docker-compose", "kubectl", "helm",
-		"make", "cmake", "curl", "wget", "jq", "rg", "ripgrep", "fd", "sed", "awk", "grep",
-		"gh", "aws", "gcloud", "az", "terraform", "ansible", "brew", "apt", "yum", "pacman",
-		"systemctl", "ssh", "scp", "rsync", "tar", "zip", "unzip", "openssl", "sqlite3",
-		"psql", "mysql", "redis-cli", "mongosh", "firebase", "vercel", "netlify", "wrangler",
-		"docmap", "codemap", "eslint", "prettier", "tsc", "webpack", "vite", "next",
-		"poetry", "uv", "bun", "deno", "java", "javac", "mvn", "gradle", "dotnet", "swift",
-		"xcodebuild", "pod", "flutter", "dart", "php", "composer", "lua", "perl", "R",
-		"bazel", "ninja", "meson", "pkg-config", "clang", "gcc", "g++", "lldb", "gdb":
-		return true
-	default:
-		return false
-	}
+	_, ok := likelyCLIBins[strings.ToLower(bin)]
+	return ok
 }
 
 func commandHelp(bin string, opt Options, cache *sync.Map) string {
