@@ -39,8 +39,8 @@ One command. Full inventory. No LLM needed.
 ## Install the CLI
 
 ```bash
-# macOS/Linux
-brew tap JordanCoin/tap && brew install docmap
+# macOS/Linux (cask — prebuilt binary, no CLT/compile step)
+brew tap JordanCoin/tap && brew install --cask docmap
 
 # Windows
 scoop bucket add docmap https://github.com/JordanCoin/scoop-docmap
