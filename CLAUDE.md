@@ -48,6 +48,8 @@ Other supported `--type` values: `deflist`, `embed`, `mention`, `issue`, `sha`, 
 docmap file.md --at 154                 # What construct is at line 154?
 docmap file.md --since HEAD~5           # Constructs on lines changed since git ref
 docmap . --since main                   # Same, across every doc in the tree
+docmap . --since HEAD --json            # Changed docs as JSON, including deletions
+docmap . --mentions --since HEAD        # Sections that mention git-changed paths
 ```
 
 `--at` is the reverse lookup — give it a line number from a grep hit, diff, or error, and it tells you the section breadcrumb and node type.

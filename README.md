@@ -111,6 +111,8 @@ docmap file.md --type table         # Every table with its headers
 
 docmap file.md --at 154             # What's at line 154?
 docmap file.md --since HEAD~5       # Constructs on lines changed since a git ref
+docmap . --since HEAD --json        # Same, machine-readable (includes deletions)
+docmap . --mentions --since HEAD    # Docs that mention files git says changed
 
 docmap file.md --search "auth"      # Search titles, content, and notables
 docmap dirA dirB --search "auth" --compact  # Search multiple roots
@@ -216,7 +218,7 @@ docmap > PDF Support (231)
   code L136-145  lang=(none)
 ```
 
-Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed.
+Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed, and lists `deleted:` paths for docs that existed at the ref. Combine with `--json` to get `changed_lines` and `"change": "D"` entries instead of the full tree. `docmap . --mentions --since HEAD` uses git's changed paths as the mention needles.
 
 ### PDF support
 

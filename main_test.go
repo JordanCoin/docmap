@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,5 +147,28 @@ func TestOutputBriefCounts(t *testing.T) {
 	out := string(buf[:n])
 	if !strings.Contains(out, "2 files") || !strings.Contains(out, "2 md") {
 		t.Fatalf("brief counts, got %q", out)
+	}
+}
+
+func TestConvertSectionsSince(t *testing.T) {
+	doc := parser.Parse("# Keep\n\nintro\n\n## Changed\n\nedit me\n\n## Other\n\nstill\n")
+	sec := doc.GetSection("Changed")
+	if sec == nil {
+		t.Fatal("missing Changed")
+	}
+	changed := map[int]bool{}
+	for i := sec.LineStart; i <= sec.LineEnd; i++ {
+		changed[i] = true
+	}
+	got := convertSectionsSince(doc.Sections, changed)
+	if len(got) == 0 {
+		t.Fatal("expected parent section in since JSON")
+	}
+	blob, _ := json.Marshal(got)
+	if !strings.Contains(string(blob), "Changed") {
+		t.Fatalf("expected Changed section, got %s", blob)
+	}
+	if strings.Contains(string(blob), "Other") {
+		t.Fatalf("unchanged Other should be omitted, got %s", blob)
 	}
 }

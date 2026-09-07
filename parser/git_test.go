@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,8 +143,8 @@ func TestChangedLinesNewFile(t *testing.T) {
 func TestChangedLinesMissingRef(t *testing.T) {
 	_, guide := initGitDocRepo(t)
 	got, err := ChangedLines(guide, "this-ref-does-not-exist")
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrBadRef) {
+		t.Fatalf("expected ErrBadRef, got %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("missing ref should be empty, got %v", got)
@@ -155,11 +156,59 @@ func TestChangedLinesNotARepo(t *testing.T) {
 	path := filepath.Join(dir, "notes.md")
 	write(t, path, "# Notes\n")
 	got, err := ChangedLines(path, "HEAD")
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrNotRepo) {
+		t.Fatalf("expected ErrNotRepo, got %v", err)
 	}
 	if len(got) != 0 {
 		t.Fatalf("non-repo should be empty, got %v", got)
+	}
+}
+
+func TestChangedPathsDeleted(t *testing.T) {
+	repo, guide := initGitDocRepo(t)
+	if err := os.Remove(guide); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := ChangedPaths(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range changes {
+		if c.Path == "docs/guide.md" && c.Status == "D" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected deleted docs/guide.md, got %+v", changes)
+	}
+}
+
+func TestChangedPathsUntracked(t *testing.T) {
+	repo, _ := initGitDocRepo(t)
+	write(t, filepath.Join(repo, "docs", "new.md"), "# New\n")
+	changes, err := ChangedPaths(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range changes {
+		if c.Path == "docs/new.md" && c.Status == "A" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected untracked docs/new.md as A, got %+v", changes)
+	}
+}
+
+func TestEnsureRef(t *testing.T) {
+	repo, _ := initGitDocRepo(t)
+	if err := EnsureRef(repo, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureRef(repo, "nope"); !errors.Is(err, ErrBadRef) {
+		t.Fatalf("expected ErrBadRef, got %v", err)
 	}
 }
 
