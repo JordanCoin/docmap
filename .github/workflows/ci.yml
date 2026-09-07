@@ -129,5 +129,8 @@ jobs:
       - name: Test --since git integration
         run: ./docmap README.md --since HEAD
 
+      - name: Test --stale local
+        run: ./docmap . --stale | tail -1
+
       - name: Test nonexistent path handling
         run: "! ./docmap /nonexistent/path"

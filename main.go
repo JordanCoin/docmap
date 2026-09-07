@@ -14,6 +14,7 @@ import (
 
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/render"
+	"github.com/JordanCoin/docmap/stale"
 )
 
 // StdinManifest represents the JSON manifest read from stdin
@@ -152,6 +153,11 @@ func main() {
 	var brief bool
 	var mentionPaths []string
 	var mentionsFlag bool
+	var staleMode bool
+	var staleDays int
+	var checkFlags bool
+	var staleRemote bool
+	var allowDomains []string
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -227,6 +233,36 @@ func main() {
 				mentionPaths = append(mentionPaths, splitMentionArg(os.Args[i+1])...)
 				i++
 			}
+		case "--stale":
+			staleMode = true
+		case "--days":
+			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
+				fmt.Fprintln(os.Stderr, "Error: --days requires a number")
+				os.Exit(1)
+			}
+			n, err := strconv.Atoi(os.Args[i+1])
+			if err != nil || n <= 0 {
+				fmt.Fprintln(os.Stderr, "Error: --days requires a positive integer")
+				os.Exit(1)
+			}
+			staleDays = n
+			i++
+		case "--check-flags":
+			checkFlags = true
+		case "--remote":
+			staleRemote = true
+		case "--allow-domains":
+			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
+				fmt.Fprintln(os.Stderr, "Error: --allow-domains requires a comma-separated list")
+				os.Exit(1)
+			}
+			for _, d := range strings.Split(os.Args[i+1], ",") {
+				d = strings.TrimSpace(d)
+				if d != "" {
+					allowDomains = append(allowDomains, d)
+				}
+			}
+			i++
 		default:
 			targets = append(targets, os.Args[i])
 		}
@@ -245,6 +281,14 @@ func main() {
 	}
 	if mentionsFlag && len(mentionPaths) == 0 && sinceRef == "" {
 		fmt.Fprintln(os.Stderr, "Error: --mentions requires a path, piped names, or --since <ref>")
+		os.Exit(1)
+	}
+	if staleDays != 0 && !staleMode && !brief {
+		fmt.Fprintln(os.Stderr, "Error: --days requires --stale (or --brief)")
+		os.Exit(1)
+	}
+	if (staleRemote || checkFlags || len(allowDomains) > 0) && !staleMode && !brief {
+		fmt.Fprintln(os.Stderr, "Error: --remote/--check-flags/--allow-domains require --stale")
 		os.Exit(1)
 	}
 	terms, err := readTerms(searchQuery, termsFile)
@@ -362,6 +406,8 @@ func main() {
 		}
 		if len(terms) > 0 {
 			outputSearch(docs, terms, jsonMode, compact)
+		} else if staleMode {
+			outputStale(docs, target, staleDays, checkFlags, staleRemote, allowDomains, jsonMode)
 		} else if sinceRef != "" && jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSONSince(docs, absPath, target, sinceRef)
@@ -369,7 +415,7 @@ func main() {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
 		} else if brief {
-			outputBrief(docs, target)
+			outputBrief(docs, target, staleDays)
 		} else if mentionsFlag {
 			outputMentions(docs, mentionPaths)
 		} else if sinceRef != "" {
@@ -394,6 +440,8 @@ func main() {
 
 		if len(terms) > 0 {
 			outputSearch([]*parser.Document{doc}, terms, jsonMode, compact)
+		} else if staleMode {
+			outputStale([]*parser.Document{doc}, filepath.Dir(target), staleDays, checkFlags, staleRemote, allowDomains, jsonMode)
 		} else if sinceRef != "" && jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSONSince([]*parser.Document{doc}, absPath, filepath.Dir(target), sinceRef)
@@ -401,7 +449,7 @@ func main() {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
 		} else if brief {
-			outputBrief([]*parser.Document{doc}, filepath.Dir(target))
+			outputBrief([]*parser.Document{doc}, filepath.Dir(target), staleDays)
 		} else if mentionsFlag {
 			outputMentions([]*parser.Document{doc}, mentionPaths)
 		} else if sinceRef != "" {
@@ -657,7 +705,7 @@ func mentionPathsFromGit(root, ref string) []string {
 	return out
 }
 
-func outputBrief(docs []*parser.Document, root string) {
+func outputBrief(docs []*parser.Document, root string, days int) {
 	totalSections := 0
 	totalTokens := 0
 	md := 0
@@ -678,6 +726,40 @@ func outputBrief(docs []*parser.Document, root string) {
 	if len(recent) > 0 {
 		fmt.Printf("recent: %s\n", strings.Join(recent, ", "))
 	}
+	findings := stale.Check(docs, stale.Options{Root: root, Days: days})
+	if len(findings) == 0 {
+		fmt.Println("stale: none")
+	} else {
+		fmt.Printf("stale: %d (run docmap %s --stale)\n", len(findings), root)
+	}
+}
+
+func outputStale(docs []*parser.Document, root string, days int, checkFlags, remote bool, allow []string, jsonMode bool) {
+	findings := stale.Check(docs, stale.Options{
+		Root:         root,
+		Days:         days,
+		CheckFlags:   checkFlags,
+		Remote:       remote,
+		AllowDomains: allow,
+	})
+	if jsonMode {
+		if findings == nil {
+			findings = []stale.Finding{}
+		}
+		json.NewEncoder(os.Stdout).Encode(findings)
+		return
+	}
+	for _, line := range stale.FormatLines(findings) {
+		fmt.Println(line)
+	}
+	fmt.Printf("%d stale claim%s\n", len(findings), pluralClaims(len(findings)))
+}
+
+func pluralClaims(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func briefTokens(n int) string {
@@ -1216,6 +1298,8 @@ Examples:
   docmap docs/                      # Specific folder
   docmap README.md --section "API"  # Filter to section
   docmap . --brief                   # Ten-line session start: counts + recent docs
+  docmap . --stale                   # Flag stale path/binary/date/env claims
+  docmap . --stale --remote          # Also HEAD-check URLs and compare config values
   docmap . --mentions parser/git.go  # Sections that mention a changed path
   docmap . --mentions --since HEAD   # Mentions of files git says changed
   docmap . --since HEAD --json       # Changed docs as JSON (includes deletions)
@@ -1234,7 +1318,12 @@ Flags:
   --terms-file <path>     Run one search query per non-comment, non-blank line
   --compact               Search output as one "file > section" line per hit
   -s, --section <name>   Filter to a specific section
-  --brief                Session-start digest: file/section counts and recent docs
+  --brief                Session-start digest: counts, recent docs, stale one-liner
+  --stale                Flag sections with missing paths/binaries/env keys or old dates
+  --days N               With --stale/--brief: status dates older than N days (default 90)
+  --check-flags          With --stale: verify backticked --flags against binary --help
+  --remote               With --stale: HEAD-check URLs, compare versions and config values
+  --allow-domains list   With --stale --remote: only check these domains (comma-separated)
   --mentions <path>      Sections that mention a path (repeat or comma-list; stdin OK)
                          With --since and no path, uses git's changed files
   -e, --expand <name>    Show full source of a section (file:L-L, including children)
