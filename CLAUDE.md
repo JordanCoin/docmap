@@ -45,6 +45,7 @@ Other supported `--type` values: `deflist`, `embed`, `mention`, `issue`, `sha`, 
 ```bash
 docmap file.md --at 154                 # What construct is at line 154?
 docmap file.md --since HEAD~5           # Constructs on lines changed since git ref
+docmap . --since main                   # Same, across every doc in the tree
 ```
 
 `--at` is the reverse lookup — give it a line number from a grep hit, diff, or error, and it tells you the section breadcrumb and node type.

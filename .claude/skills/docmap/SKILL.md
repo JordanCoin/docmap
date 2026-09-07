@@ -73,9 +73,10 @@ Returns the section breadcrumb and node type at line 154. Use this when you have
 ```bash
 docmap file.md --since HEAD~5
 docmap file.md --since main
+docmap . --since HEAD
 ```
 
-Shows only the constructs that sit on lines modified since the given git ref. Uses `git diff --unified=0` under the hood.
+Shows only the constructs that sit on lines modified since the given git ref. Uses `git diff --unified=0` from the file's repository root (your cwd does not have to be the repo). Directory arguments print only docs that changed. New files count as fully changed.
 
 ### Search across notables
 

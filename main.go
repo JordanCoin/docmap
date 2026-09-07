@@ -330,6 +330,8 @@ func main() {
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
+		} else if sinceRef != "" {
+			outputChangedSince(docs, target, sinceRef)
 		} else if showRefs {
 			render.RefsTree(docs, target)
 		} else {
@@ -384,7 +386,15 @@ var skipDirs = map[string]bool{
 // to dir. It returns nil when dir is not inside a git work tree or git is not
 // available, in which case callers fall back to skipDirs only.
 func gitTrackedSet(dir string) map[string]bool {
-	cmd := exec.Command("git", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil
+	}
+	inside, err := exec.Command("git", "-C", abs, "rev-parse", "--is-inside-work-tree").Output()
+	if err != nil || strings.TrimSpace(string(inside)) != "true" {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", abs, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -482,6 +492,22 @@ func parseDirectoryOpts(dir string, all bool) []*parser.Document {
 	})
 
 	return docs
+}
+
+func outputChangedSince(docs []*parser.Document, root, ref string) {
+	shown := 0
+	for _, doc := range docs {
+		path := filepath.Join(root, doc.Filename)
+		changed, _ := parser.ChangedLines(path, ref)
+		if len(changed) == 0 {
+			continue
+		}
+		render.ChangedSince(doc, changed, ref)
+		shown++
+	}
+	if shown == 0 {
+		render.ChangedSince(&parser.Document{Filename: root}, map[int]bool{}, ref)
+	}
 }
 
 func parsePath(path string, all bool) ([]*parser.Document, error) {
@@ -753,6 +779,7 @@ Flags:
   --kind <name>          Sub-filter for --type callout (e.g. --kind warning)
   --at <line>            Show what construct lives at a specific line number
   --since <ref>          Show constructs on lines changed since a git ref
+                         (runs git from the file's repo; works on a file or dir)
   -r, --refs             Show cross-references between markdown files
   -j, --json             Output JSON format
   -v, --version          Print version
