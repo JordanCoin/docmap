@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/JordanCoin/docmap/internal/docset"
 )
 
 func TestSearchRootsTermsCompactAndJSON(t *testing.T) {
@@ -26,11 +28,11 @@ func TestSearchRootsTermsCompactAndJSON(t *testing.T) {
 	if err := os.WriteFile(b+"/two.md", []byte("# Beta\nhello"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	docs, err := parsePath(a, false)
+	docs, err := docset.LoadPath(a, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := parsePath(b, false)
+	other, err := docset.LoadPath(b, false)
 	if err != nil {
 		t.Fatal(err)
 	}
