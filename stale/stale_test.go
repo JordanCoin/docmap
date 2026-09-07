@@ -186,13 +186,17 @@ func TestSkipSchemeAndAPIPaths(t *testing.T) {
 func TestSkipCIEnvKeys(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, ".env.example"), "APP_KEY=1\n")
-	write(t, filepath.Join(root, "ci.md"), "# CI\n\n## Env\n\nUses `$GITHUB_TOKEN` and `$RUNNER_OS` and `$CI` and `$MISSING_CI_KEY`.\n")
+	write(t, filepath.Join(root, "ci.md"), "# CI\n\n## Env\n\nUses `$GITHUB_TOKEN` and `$RUNNER_OS` and `$CI` and `$NODE_ENV` and `$INPUT_TOKEN` and `$ACTIONS_RUNTIME_TOKEN` and `$PATH` and `$HOME` and `$USER` and `$TERM` and `$SHELL` and `$MISSING_CI_KEY`.\n")
 	doc := parser.Parse(mustRead(t, filepath.Join(root, "ci.md")))
 	doc.Filename = "ci.md"
 	findings := Check([]*parser.Document{doc}, Options{Root: root})
 	for _, f := range findings {
-		if strings.Contains(f.Reason, "GITHUB_TOKEN") || strings.Contains(f.Reason, "RUNNER_OS") ||
-			(f.Kind == "missing_env" && strings.Contains(f.Reason, "`CI`")) {
+		for _, skip := range []string{"GITHUB_TOKEN", "RUNNER_OS", "NODE_ENV", "INPUT_TOKEN", "ACTIONS_RUNTIME_TOKEN", "`PATH`", "`HOME`", "`USER`", "`TERM`", "`SHELL`"} {
+			if strings.Contains(f.Reason, skip) {
+				t.Fatalf("%s should be allowlisted: %+v", skip, findings)
+			}
+		}
+		if f.Kind == "missing_env" && strings.Contains(f.Reason, "`CI`") {
 			t.Fatalf("CI keys should be allowlisted: %+v", findings)
 		}
 	}
@@ -204,6 +208,66 @@ func TestSkipCIEnvKeys(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected MISSING_CI_KEY, got %+v", findings)
+	}
+}
+
+func TestSkipOptionalStackCargoInGoRepo(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "go.mod"), "module example.com/app\n\ngo 1.22\n")
+	write(t, filepath.Join(root, "main.go"), "package main\n")
+	write(t, filepath.Join(root, "guide.md"), "# Guide\n\n## Setup\n\nOptional `Cargo.toml` for Rust users. Real path `docs/missing.md`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "guide.md")))
+	doc.Filename = "guide.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	for _, f := range findings {
+		if f.Kind == "missing_path" && strings.Contains(f.Reason, "Cargo.toml") {
+			t.Fatalf("Cargo.toml should be skipped in Go-only repo: %+v", findings)
+		}
+	}
+	found := false
+	for _, f := range findings {
+		if f.Kind == "missing_path" && strings.Contains(f.Reason, "docs/missing.md") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected docs/missing.md finding, got %+v", findings)
+	}
+}
+
+func TestGoModStillFlaggedInGoRepo(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "main.go"), "package main\n")
+	write(t, filepath.Join(root, "guide.md"), "# Guide\n\n## Setup\n\nSee `go.mod`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "guide.md")))
+	doc.Filename = "guide.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	found := false
+	for _, f := range findings {
+		if f.Kind == "missing_path" && strings.Contains(f.Reason, "go.mod") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing go.mod in Go repo, got %+v", findings)
+	}
+}
+
+func TestOptionalStackWithEvidenceStillFlags(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+	write(t, filepath.Join(root, "guide.md"), "# Guide\n\n## Crates\n\nSee `crates/missing/Cargo.toml`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "guide.md")))
+	doc.Filename = "guide.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	found := false
+	for _, f := range findings {
+		if f.Kind == "missing_path" && strings.Contains(f.Reason, "crates/missing/Cargo.toml") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing_path for nested Cargo.toml when Rust evidence exists, got %+v", findings)
 	}
 }
 

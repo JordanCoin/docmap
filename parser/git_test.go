@@ -349,6 +349,62 @@ func TestChangedPathsIgnoresNonDocs(t *testing.T) {
 			t.Fatalf("non-doc delete leaked: %+v", changes)
 		}
 	}
+
+	all, err := ChangedPathsAll(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundGo := false
+	for _, c := range all {
+		if c.Path == "main.go" && c.Status == "D" {
+			foundGo = true
+			break
+		}
+	}
+	if !foundGo {
+		t.Fatalf("ChangedPathsAll should include deleted .go: %+v", all)
+	}
+}
+
+func TestChangedPathsAllIncludesNonDocs(t *testing.T) {
+	repo, _ := initGitDocRepo(t)
+	write(t, filepath.Join(repo, "main.go"), "package main\n")
+	runGit(t, repo, "add", "main.go")
+	gitCommit(t, repo, "code")
+	if err := os.Remove(filepath.Join(repo, "main.go")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(repo, "helper.go"), "package main\n")
+
+	all, err := ChangedPathsAll(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var deletedGo, untrackedGo bool
+	for _, c := range all {
+		if c.Path == "main.go" && c.Status == "D" {
+			deletedGo = true
+		}
+		if c.Path == "helper.go" && c.Status == "A" {
+			untrackedGo = true
+		}
+	}
+	if !deletedGo {
+		t.Fatalf("ChangedPathsAll missing deleted .go: %+v", all)
+	}
+	if !untrackedGo {
+		t.Fatalf("ChangedPathsAll missing untracked .go: %+v", all)
+	}
+
+	docsOnly, err := ChangedPaths(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range docsOnly {
+		if strings.HasSuffix(c.Path, ".go") {
+			t.Fatalf("ChangedPaths should still ignore .go, got %+v", docsOnly)
+		}
+	}
 }
 
 func TestChangedLinesBinary(t *testing.T) {

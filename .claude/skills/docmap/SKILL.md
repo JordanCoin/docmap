@@ -97,6 +97,7 @@ docmap . --brief --stale                    # Brief plus stale claim count
 docmap . --stale                            # Flag stale path/binary/date/env claims
 docmap . --stale --remote --json            # Also check URLs/config (network)
 docmap . --mentions src/foo.go              # Sections that mention a changed path
+docmap . --mentions --since HEAD            # Mentions of all git-changed paths (incl. .go)
 ```
 
 ### Cross-file references

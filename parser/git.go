@@ -261,6 +261,23 @@ type PathChange struct {
 // including deletions, renames, and untracked files. Paths are slash-
 // separated and relative to dir. Non-doc paths are omitted.
 func ChangedPaths(dir, ref string) ([]PathChange, error) {
+	all, err := ChangedPathsAll(dir, ref)
+	if err != nil {
+		return nil, err
+	}
+	var out []PathChange
+	for _, c := range all {
+		if isDocPath(c.Path) || (c.OldPath != "" && isDocPath(c.OldPath)) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// ChangedPathsAll lists every path that differs from ref under dir,
+// including non-doc files (e.g. .go), deletions, renames, and untracked
+// files. Paths are slash-separated and relative to dir.
+func ChangedPathsAll(dir, ref string) ([]PathChange, error) {
 	if err := EnsureRef(dir, ref); err != nil {
 		return nil, err
 	}
@@ -300,7 +317,7 @@ func ChangedPaths(dir, ref string) ([]PathChange, error) {
 				continue
 			}
 			rel = filepath.ToSlash(rel)
-			if seen[rel] || !isDocPath(rel) {
+			if seen[rel] {
 				continue
 			}
 			changes = append(changes, PathChange{Path: rel, Status: "A"})
@@ -343,9 +360,6 @@ func parseNameStatus(raw, root, abs string) []PathChange {
 			if !okNew {
 				continue
 			}
-			if !isDocPath(newRel) && (oldRel == "" || !isDocPath(oldRel)) {
-				continue
-			}
 			out = append(out, PathChange{Path: newRel, OldPath: oldRel, Status: code})
 			continue
 		}
@@ -354,7 +368,7 @@ func parseNameStatus(raw, root, abs string) []PathChange {
 		}
 		rel, ok := relUnder(root, abs, parts[i+1])
 		i += 2
-		if !ok || !isDocPath(rel) {
+		if !ok {
 			continue
 		}
 		out = append(out, PathChange{Path: rel, Status: code})

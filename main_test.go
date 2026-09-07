@@ -127,6 +127,49 @@ func TestOutputMentionsFindsPath(t *testing.T) {
 	}
 }
 
+func TestMentionPathsFromGitIncludesNonDocs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=docmap",
+			"GIT_AUTHOR_EMAIL=docmap@test",
+			"GIT_COMMITTER_NAME=docmap",
+			"GIT_COMMITTER_EMAIL=docmap@test",
+			"GIT_TERMINAL_PROMPT=0",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "docmap@test")
+	run("config", "user.name", "docmap")
+	run("config", "commit.gpgsign", "false")
+	writeFile(t, filepath.Join(dir, "guide.md"), "# Guide\n\nSee `lib.go`.\n")
+	writeFile(t, filepath.Join(dir, "lib.go"), "package lib\n")
+	run("add", ".")
+	run("commit", "-q", "-m", "init")
+	writeFile(t, filepath.Join(dir, "lib.go"), "package lib\n\nfunc F() {}\n")
+
+	paths := mentionPathsFromGit(dir, "HEAD")
+	found := false
+	for _, p := range paths {
+		if p == "lib.go" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("mentionPathsFromGit should include .go change, got %v", paths)
+	}
+}
+
 func TestOutputBriefCounts(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.md"), "# A\n\n## One\n\ntext\n")

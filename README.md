@@ -39,8 +39,8 @@ One command. Full inventory. No LLM needed.
 ## Install the CLI
 
 ```bash
-# macOS/Linux
-brew tap JordanCoin/tap && brew install docmap
+# macOS/Linux (cask — prebuilt binary, no CLT/compile step)
+brew tap JordanCoin/tap && brew install --cask docmap
 
 # Windows
 scoop bucket add docmap https://github.com/JordanCoin/scoop-docmap
@@ -48,6 +48,31 @@ scoop install docmap
 ```
 
 > Other options: [Releases](https://github.com/JordanCoin/docmap/releases) | `go install github.com/JordanCoin/docmap@latest`
+
+## MCP server
+
+`docmap mcp` speaks stdio [MCP](https://modelcontextprotocol.io) so agents can call structured tools instead of shelling out and scraping ANSI.
+
+```bash
+docmap mcp
+```
+
+Ship-with-repo config (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "docmap": {
+      "command": "docmap",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Tools (all return typed JSON): `docmap__inventory`, `docmap__tree`, `docmap__brief`, `docmap__section`, `docmap__expand`, `docmap__find_by_type`, `docmap__at_line`, `docmap__since`, `docmap__stale`, `docmap__search`, `docmap__json`, `docmap__refs`.
+
+Claude Desktop / other clients — same stanza in `~/Library/Application Support/Claude/claude_desktop_config.json` (or your client's MCP config). Requires `docmap` on `PATH`.
 
 ## Install the Claude Code skill
 
@@ -220,7 +245,7 @@ docmap > PDF Support (231)
   code L136-145  lang=(none)
 ```
 
-Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed, lists `deleted:` / `renamed:` for docs that moved since the ref, and ignores non-doc paths. Binary docs (e.g. PDFs) light up as fully changed. Combine with `--json` to get `changed_lines`, `change` (`A`/`M`/`D`/`R`), and `old_path` for renames. `docmap . --mentions --since HEAD` uses git's changed paths (including deletes) as the mention needles.
+Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed, lists `deleted:` / `renamed:` for docs that moved since the ref, and ignores non-doc paths. Binary docs (e.g. PDFs) light up as fully changed. Combine with `--json` to get `changed_lines`, `change` (`A`/`M`/`D`/`R`), and `old_path` for renames. `docmap . --mentions --since HEAD` uses git's changed paths as mention needles — including non-doc paths (e.g. `.go`) and deletes — while `--since` listing itself stays doc-only.
 
 ### Stale claims
 
