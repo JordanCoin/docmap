@@ -5,16 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/render"
 	"github.com/JordanCoin/docmap/stale"
+	"github.com/charlievieth/fastwalk"
 )
 
 // StdinManifest represents the JSON manifest read from stdin
@@ -287,7 +291,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error: --days requires --stale (or --brief)")
 		os.Exit(1)
 	}
-	if (staleRemote || checkFlags || len(allowDomains) > 0) && !staleMode && !brief {
+	if (staleRemote || checkFlags || len(allowDomains) > 0) && !staleMode {
 		fmt.Fprintln(os.Stderr, "Error: --remote/--check-flags/--allow-domains require --stale")
 		os.Exit(1)
 	}
@@ -406,6 +410,8 @@ func main() {
 		}
 		if len(terms) > 0 {
 			outputSearch(docs, terms, jsonMode, compact)
+		} else if brief {
+			outputBrief(docs, target, staleDays, staleMode)
 		} else if staleMode {
 			outputStale(docs, target, staleDays, checkFlags, staleRemote, allowDomains, jsonMode)
 		} else if sinceRef != "" && jsonMode {
@@ -414,8 +420,6 @@ func main() {
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
-		} else if brief {
-			outputBrief(docs, target, staleDays)
 		} else if mentionsFlag {
 			outputMentions(docs, mentionPaths)
 		} else if sinceRef != "" {
@@ -440,6 +444,8 @@ func main() {
 
 		if len(terms) > 0 {
 			outputSearch([]*parser.Document{doc}, terms, jsonMode, compact)
+		} else if brief {
+			outputBrief([]*parser.Document{doc}, filepath.Dir(target), staleDays, staleMode)
 		} else if staleMode {
 			outputStale([]*parser.Document{doc}, filepath.Dir(target), staleDays, checkFlags, staleRemote, allowDomains, jsonMode)
 		} else if sinceRef != "" && jsonMode {
@@ -448,8 +454,6 @@ func main() {
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
-		} else if brief {
-			outputBrief([]*parser.Document{doc}, filepath.Dir(target), staleDays)
 		} else if mentionsFlag {
 			outputMentions([]*parser.Document{doc}, mentionPaths)
 		} else if sinceRef != "" {
@@ -486,6 +490,7 @@ var skipDirs = map[string]bool{
 	"__pycache__":  true,
 	".next":        true,
 	".cache":       true,
+	".docmap":      true,
 }
 
 // gitTrackedSet returns the set of files git considers part of the project
@@ -524,20 +529,25 @@ func parseDirectory(dir string) []*parser.Document {
 
 // parseDirectoryOpts walks dir for markdown, PDF and YAML documents. Unless
 // all is true it skips dependency directories and honors .gitignore.
+// Collection uses charlievieth/fastwalk (parallel WalkDir); parsing uses a
+// worker pool bounded by GOMAXPROCS. Results are sorted by Filename.
 func parseDirectoryOpts(dir string, all bool) []*parser.Document {
-	var docs []*parser.Document
-
 	var tracked map[string]bool
 	if !all {
 		tracked = gitTrackedSet(dir)
 	}
 
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	var (
+		pathMu sync.Mutex
+		paths  []string
+	)
+
+	_ = fastwalk.Walk(nil, dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() {
-			if !all && path != dir && skipDirs[info.Name()] {
+		if d.IsDir() {
+			if !all && path != dir && skipDirs[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -547,14 +557,12 @@ func parseDirectoryOpts(dir string, all bool) []*parser.Document {
 		isMd := strings.HasSuffix(lowerPath, ".md")
 		isPdf := strings.HasSuffix(lowerPath, ".pdf")
 		isYaml := strings.HasSuffix(lowerPath, ".yaml") || strings.HasSuffix(lowerPath, ".yml")
-
 		if !isMd && !isPdf && !isYaml {
 			return nil
 		}
 
 		// Skip hidden files
-		base := filepath.Base(path)
-		if strings.HasPrefix(base, ".") {
+		if strings.HasPrefix(d.Name(), ".") {
 			return nil
 		}
 
@@ -566,41 +574,56 @@ func parseDirectoryOpts(dir string, all bool) []*parser.Document {
 			}
 		}
 
-		var doc *parser.Document
-
-		if isPdf {
-			var err error
-			doc, err = parser.ParsePDF(path)
-			if err != nil {
-				// Skip PDFs that can't be parsed
-				return nil
-			}
-		} else if isYaml {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			doc, err = parser.ParseYAML(string(content))
-			if err != nil {
-				// Skip YAML files that can't be parsed
-				return nil
-			}
-		} else {
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return nil
-			}
-			doc = parser.Parse(string(content))
-		}
-
-		// Get relative path from dir
-		relPath, _ := filepath.Rel(dir, path)
-		doc.Filename = relPath
-
-		docs = append(docs, doc)
+		pathMu.Lock()
+		paths = append(paths, path)
+		pathMu.Unlock()
 		return nil
 	})
 
+	workers := runtime.GOMAXPROCS(0)
+	if workers < 1 {
+		workers = 1
+	}
+	if n := len(paths); n < workers {
+		workers = n
+	}
+
+	var (
+		docsMu sync.Mutex
+		docs   []*parser.Document
+		wg     sync.WaitGroup
+	)
+	jobs := make(chan string)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for path := range jobs {
+				doc, err := parser.ParseFile(path)
+				if err != nil {
+					continue
+				}
+
+				relPath, _ := filepath.Rel(dir, path)
+				doc.Filename = relPath
+
+				docsMu.Lock()
+				docs = append(docs, doc)
+				docsMu.Unlock()
+			}
+		}()
+	}
+
+	for _, path := range paths {
+		jobs <- path
+	}
+	close(jobs)
+	wg.Wait()
+
+	sort.Slice(docs, func(i, j int) bool {
+		return docs[i].Filename < docs[j].Filename
+	})
 	return docs
 }
 
@@ -609,15 +632,20 @@ func outputChangedSince(docs []*parser.Document, root, ref string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	paths := make([]string, len(docs))
+	for i, doc := range docs {
+		paths[i] = filepath.Join(root, doc.Filename)
+	}
+	batch, err := parser.ChangedLinesBatch(root, ref, paths)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	shown := 0
 	seen := map[string]bool{}
 	for _, doc := range docs {
 		path := filepath.Join(root, doc.Filename)
-		changed, err := parser.ChangedLines(path, ref)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "docmap: %s: %v\n", doc.Filename, err)
-			continue
-		}
+		changed := batch[path]
 		if len(changed) == 0 {
 			continue
 		}
@@ -705,7 +733,7 @@ func mentionPathsFromGit(root, ref string) []string {
 	return out
 }
 
-func outputBrief(docs []*parser.Document, root string, days int) {
+func outputBrief(docs []*parser.Document, root string, days int, runStale bool) {
 	totalSections := 0
 	totalTokens := 0
 	md := 0
@@ -725,6 +753,10 @@ func outputBrief(docs []*parser.Document, root string, days int) {
 	}
 	if len(recent) > 0 {
 		fmt.Printf("recent: %s\n", strings.Join(recent, ", "))
+	}
+	if !runStale {
+		fmt.Println("stale: run with --brief --stale")
+		return
 	}
 	findings := stale.Check(docs, stale.Options{Root: root, Days: days})
 	if len(findings) == 0 {
@@ -947,18 +979,7 @@ func parsePath(path string, all bool) ([]*parser.Document, error) {
 }
 
 func parseSingleFile(path string) (*parser.Document, error) {
-	lower := strings.ToLower(path)
-	if strings.HasSuffix(lower, ".pdf") {
-		return parser.ParsePDF(path)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
-		return parser.ParseYAML(string(content))
-	}
-	return parser.Parse(string(content)), nil
+	return parser.ParseFile(path)
 }
 
 func readTerms(search, filename string) ([]string, error) {
@@ -1068,11 +1089,20 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 		Root:  absRoot,
 		Since: ref,
 	}
+	paths := make([]string, len(docs))
+	for i, doc := range docs {
+		paths[i] = filepath.Join(root, doc.Filename)
+	}
+	batch, err := parser.ChangedLinesBatch(root, ref, paths)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	seen := map[string]bool{}
 	for _, doc := range docs {
 		path := filepath.Join(root, doc.Filename)
-		changed, err := parser.ChangedLines(path, ref)
-		if err != nil || len(changed) == 0 {
+		changed := batch[path]
+		if len(changed) == 0 {
 			continue
 		}
 		lines := sortedChangedLines(changed)
@@ -1297,7 +1327,8 @@ Examples:
   docmap config.yaml                # Single YAML file structure
   docmap docs/                      # Specific folder
   docmap README.md --section "API"  # Filter to section
-  docmap . --brief                   # Ten-line session start: counts + recent docs
+  docmap . --brief                   # Session start: counts + recent docs
+  docmap . --brief --stale           # Brief plus stale claim count
   docmap . --stale                   # Flag stale path/binary/date/env claims
   docmap . --stale --remote          # Also HEAD-check URLs and compare config values
   docmap . --mentions parser/git.go  # Sections that mention a changed path
@@ -1318,9 +1349,9 @@ Flags:
   --terms-file <path>     Run one search query per non-comment, non-blank line
   --compact               Search output as one "file > section" line per hit
   -s, --section <name>   Filter to a specific section
-  --brief                Session-start digest: counts, recent docs, stale one-liner
+  --brief                Session-start digest: counts + recent docs (add --stale for count)
   --stale                Flag sections with missing paths/binaries/env keys or old dates
-  --days N               With --stale/--brief: status dates older than N days (default 90)
+  --days N               With --stale/--brief --stale: status dates older than N days (default 90)
   --check-flags          With --stale: verify backticked --flags against binary --help
   --remote               With --stale: HEAD-check URLs, compare versions and config values
   --allow-domains list   With --stale --remote: only check these domains (comma-separated)

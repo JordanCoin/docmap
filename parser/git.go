@@ -41,44 +41,76 @@ func ChangedLines(file, ref string) (map[int]bool, error) {
 	if root == "" {
 		return map[int]bool{}, fmt.Errorf("%w", ErrNotRepo)
 	}
-	rel, ok := repoRelPath(root, abs)
-	if !ok {
-		return map[int]bool{}, fmt.Errorf("%w", ErrNotRepo)
-	}
-
-	if !gitRevExists(root, ref) {
-		return map[int]bool{}, fmt.Errorf("%w %q", ErrBadRef, ref)
-	}
-
-	// Renames: compare against the pre-rename blob first, otherwise git
-	// reports the new path as a pure add and every line looks changed.
-	if !fileExistedAt(root, ref, rel) {
-		if old := renameSource(root, ref, rel); old != "" {
-			out, err := runDiff(root, ref, rel, old)
-			if err == nil || isDiffExit(err) {
-				return linesFromDiff(string(out), abs), nil
-			}
-		}
-	}
-
-	cmdOut, err := runDiff(root, ref, rel, "")
+	batch, err := ChangedLinesBatch(root, ref, []string{abs})
 	if err != nil {
-		if isDiffExit(err) {
-			return linesFromDiff(string(cmdOut), abs), nil
-		}
-		if fileExistedAt(root, ref, rel) {
-			return map[int]bool{}, nil
-		}
-		return allFileLines(abs), nil
+		return map[int]bool{}, err
 	}
-	if len(bytes.TrimSpace(cmdOut)) > 0 {
-		return linesFromDiff(string(cmdOut), abs), nil
+	if lines, ok := batch[abs]; ok {
+		return lines, nil
+	}
+	return map[int]bool{}, nil
+}
+
+// ChangedLinesBatch returns changed line sets for each path in files since
+// ref, keyed by the exact strings passed in. It runs one repo-level
+// `git diff --unified=0 -M ref` (plus one ls-tree for paths absent from the
+// diff) instead of spawning git once per file.
+//
+// Behavior matches ChangedLines: renames light up only real edits, binaries
+// and new/untracked files mark every current line, and ErrNotRepo / ErrBadRef
+// are returned when the root or ref is invalid.
+func ChangedLinesBatch(root, ref string, files []string) (map[string]map[int]bool, error) {
+	result := make(map[string]map[int]bool, len(files))
+	absRoot := canonicalPath(root)
+	gitroot := gitRoot(absRoot)
+	if gitroot == "" {
+		if fi, err := os.Stat(absRoot); err == nil && !fi.IsDir() {
+			gitroot = gitRoot(filepath.Dir(absRoot))
+		}
+	}
+	if gitroot == "" {
+		return nil, fmt.Errorf("%w", ErrNotRepo)
+	}
+	if !gitRevExists(gitroot, ref) {
+		return nil, fmt.Errorf("%w %q", ErrBadRef, ref)
+	}
+	if len(files) == 0 {
+		return result, nil
 	}
 
-	if fileExistedAt(root, ref, rel) {
-		return map[int]bool{}, nil
+	cmdOut, err := runRepoDiff(gitroot, ref)
+	if err != nil && !isDiffExit(err) && len(cmdOut) == 0 {
+		return nil, err
 	}
-	return allFileLines(abs), nil
+
+	byRel := make(map[string]map[int]bool)
+	for rel, section := range splitDiffSections(string(cmdOut)) {
+		abs := filepath.Join(gitroot, filepath.FromSlash(rel))
+		byRel[rel] = linesFromDiff(section, abs)
+	}
+
+	var atRef map[string]bool
+	for _, file := range files {
+		abs := canonicalPath(file)
+		rel, ok := repoRelPath(gitroot, abs)
+		if !ok {
+			result[file] = map[int]bool{}
+			continue
+		}
+		if lines, ok := byRel[rel]; ok {
+			result[file] = lines
+			continue
+		}
+		if atRef == nil {
+			atRef = filesAtRef(gitroot, ref)
+		}
+		if atRef[rel] {
+			result[file] = map[int]bool{}
+			continue
+		}
+		result[file] = allFileLines(abs)
+	}
+	return result, nil
 }
 
 func isDiffExit(err error) bool {
@@ -86,13 +118,95 @@ func isDiffExit(err error) bool {
 	return ok && ee.ExitCode() == 1
 }
 
-func runDiff(root, ref, rel, oldRel string) ([]byte, error) {
-	if oldRel != "" {
-		cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", ref+":"+oldRel, rel)
-		return cmd.Output()
-	}
-	cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", ref, "--", rel)
+func runRepoDiff(root, ref string) ([]byte, error) {
+	cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", "-M", ref)
 	return cmd.Output()
+}
+
+// splitDiffSections splits a multi-file unified diff into per-path bodies
+// keyed by the new (b/) path, slash-separated and relative to the repo root.
+func splitDiffSections(diff string) map[string]string {
+	sections := map[string]string{}
+	if strings.TrimSpace(diff) == "" {
+		return sections
+	}
+
+	var curPath string
+	var buf strings.Builder
+	flush := func() {
+		if curPath != "" {
+			sections[curPath] = buf.String()
+		}
+		buf.Reset()
+		curPath = ""
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(diff))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			flush()
+			curPath = pathFromDiffGitLine(line)
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		case strings.HasPrefix(line, "rename to "):
+			curPath = filepath.ToSlash(strings.TrimPrefix(line, "rename to "))
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		case strings.HasPrefix(line, "+++ b/"):
+			p := trimDiffPath(strings.TrimPrefix(line, "+++ b/"))
+			if p != "/dev/null" && p != "" {
+				curPath = filepath.ToSlash(p)
+			}
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		default:
+			if curPath != "" || buf.Len() > 0 {
+				buf.WriteString(line)
+				buf.WriteByte('\n')
+			}
+		}
+	}
+	flush()
+	return sections
+}
+
+func pathFromDiffGitLine(line string) string {
+	rest := strings.TrimPrefix(line, "diff --git ")
+	if i := strings.LastIndex(rest, " b/"); i >= 0 {
+		return filepath.ToSlash(rest[i+3:])
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	return filepath.ToSlash(strings.TrimPrefix(fields[len(fields)-1], "b/"))
+}
+
+func trimDiffPath(p string) string {
+	if i := strings.IndexByte(p, '\t'); i >= 0 {
+		return p[:i]
+	}
+	return p
+}
+
+func filesAtRef(root, ref string) map[string]bool {
+	cmd := gitCommand(root, "ls-tree", "-r", "--name-only", "--full-tree", ref)
+	out, err := cmd.Output()
+	if err != nil {
+		return map[string]bool{}
+	}
+	paths := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		paths[filepath.ToSlash(line)] = true
+	}
+	return paths
 }
 
 func linesFromDiff(diff, abs string) map[int]bool {
@@ -110,36 +224,6 @@ func linesFromDiff(diff, abs string) map[int]bool {
 func isBinaryDiff(diff string) bool {
 	return strings.Contains(diff, "Binary files ") ||
 		strings.Contains(diff, "GIT binary patch")
-}
-
-func renameSource(root, ref, rel string) string {
-	cmd := gitCommand(root, "diff", "--no-color", "--name-status", "-M", "-z", ref, "--")
-	out, err := cmd.Output()
-	if err != nil && !isDiffExit(err) {
-		return ""
-	}
-	parts := strings.Split(string(out), "\x00")
-	for i := 0; i < len(parts); {
-		status := strings.TrimSpace(parts[i])
-		if status == "" {
-			i++
-			continue
-		}
-		if status[0] == 'R' || status[0] == 'C' {
-			if i+2 >= len(parts) {
-				break
-			}
-			oldPath := filepath.ToSlash(parts[i+1])
-			newPath := filepath.ToSlash(parts[i+2])
-			if newPath == rel {
-				return oldPath
-			}
-			i += 3
-			continue
-		}
-		i += 2
-	}
-	return ""
 }
 
 // GitRoot returns the work tree root that contains dir, or "" if dir is
@@ -372,11 +456,6 @@ func repoRelPath(root, abs string) (string, bool) {
 
 func gitRevExists(root, ref string) bool {
 	cmd := gitCommand(root, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
-	return cmd.Run() == nil
-}
-
-func fileExistedAt(root, ref, rel string) bool {
-	cmd := gitCommand(root, "cat-file", "-e", ref+":"+rel)
 	return cmd.Run() == nil
 }
 

@@ -23,6 +23,9 @@ dist/
 # Codemap
 .codemap/
 
+# Docmap parse cache
+.docmap/
+
 # Local agent/MCP tooling state (not part of the project source)
 .architect/
 .serena/

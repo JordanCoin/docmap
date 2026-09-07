@@ -101,7 +101,8 @@ docmap config.yaml                  # YAML file structure
 
 docmap README.md --section "API"    # Filter to section
 docmap README.md --expand "API"     # Raw section source with file:L-L
-docmap . --brief                    # Session start: counts + recently changed docs
+docmap . --brief                    # Session start: counts + recent docs (skips stale)
+docmap . --brief --stale            # Brief plus stale claim count
 docmap . --stale                    # Flag stale path/binary/date/env claims
 docmap . --stale --remote --json    # Also check URLs/config values (network)
 
@@ -231,7 +232,7 @@ docmap . --stale --remote --allow-domains example.com,github.com --json
 
 Local checks (zero network): missing backticked paths, binaries not on `PATH`, status-heading dates older than `--days` (default 90), and `$ENV` keys absent from `.env.example` / compose / config files.
 
-`--remote` adds HEAD checks for http(s) URLs, `tool 1.2.3` vs `tool --version`, and `KEY=value` claims that disagree with root config. Output is `file > section: reason` plus a count; `--json` emits the finding array. `--brief` includes a one-line `stale: N` summary.
+`--remote` adds HEAD checks for http(s) URLs, `tool 1.2.3` vs `tool --version`, and `KEY=value` claims that disagree with root config. Output is `file > section: reason` plus a count; `--json` emits the finding array. Default `--brief` skips stale checks (prints a hint); `--brief --stale` adds a one-line `stale: N` summary.
 
 ### PDF support
 
@@ -299,6 +300,8 @@ Together: complete spatial awareness of any repository.
 **YAML:** parsed by `yaml.v3` with keys mapped to sections.
 
 No API calls. Just fast, local parsing.
+
+**Performance:** parsed documents are cached under `<repo>/.docmap/cache` (git root of each file), keyed by absolute path + mtime + size. Set `DOCMAP_NO_CACHE=1` to disable.
 
 ## JSON output
 

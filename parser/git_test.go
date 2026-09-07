@@ -9,6 +9,89 @@ import (
 	"testing"
 )
 
+func TestSplitDiffSections(t *testing.T) {
+	diff := `diff --git a/docs/a.md b/docs/a.md
+--- a/docs/a.md
++++ b/docs/a.md
+@@ -1 +1 @@
+-old
++new
+diff --git a/docs/old.md b/docs/renamed.md
+similarity index 80%
+rename from docs/old.md
+rename to docs/renamed.md
+--- a/docs/old.md
++++ b/docs/renamed.md
+@@ -2 +2 @@
+-x
++y
+diff --git a/docs/x.pdf b/docs/x.pdf
+Binary files a/docs/x.pdf and b/docs/x.pdf differ
+`
+	got := splitDiffSections(diff)
+	if _, ok := got["docs/a.md"]; !ok {
+		t.Fatalf("missing docs/a.md, got keys %v", keysOf(got))
+	}
+	if _, ok := got["docs/renamed.md"]; !ok {
+		t.Fatalf("missing renamed path, got keys %v", keysOf(got))
+	}
+	if !isBinaryDiff(got["docs/x.pdf"]) {
+		t.Fatal("expected binary section for docs/x.pdf")
+	}
+	if strings.Contains(got["docs/a.md"], "renamed.md") {
+		t.Fatal("section for a.md leaked rename content")
+	}
+}
+
+func TestChangedLinesBatch(t *testing.T) {
+	repo, guide := initGitDocRepo(t)
+	write(t, guide, "# Guide\n\n## Setup\n\nhello\n")
+	newbie := filepath.Join(repo, "docs", "new.md")
+	write(t, newbie, "# New\n\n## Body\n\ntext\n")
+	gitCommit(t, repo, "second")
+
+	other := filepath.Join(repo, "docs", "other.md")
+	write(t, other, "# Other\n\nedited\n")
+
+	batch, err := ChangedLinesBatch(repo, "HEAD~1", []string{guide, newbie, other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !batch[guide][4] && !batch[guide][5] {
+		t.Fatalf("guide should show setup edits, got %v", batch[guide])
+	}
+	if !batch[newbie][1] {
+		t.Fatalf("committed-after-ref file should be fully changed, got %v", batch[newbie])
+	}
+	if !batch[other][1] {
+		t.Fatalf("untracked should be fully changed, got %v", batch[other])
+	}
+
+	unchanged, err := ChangedLinesBatch(repo, "HEAD", []string{guide})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged[guide]) != 0 {
+		t.Fatalf("HEAD should be empty for committed guide, got %v", unchanged[guide])
+	}
+}
+
+func TestChangedLinesBatchBadRef(t *testing.T) {
+	repo, guide := initGitDocRepo(t)
+	_, err := ChangedLinesBatch(repo, "nope", []string{guide})
+	if !errors.Is(err, ErrBadRef) {
+		t.Fatalf("expected ErrBadRef, got %v", err)
+	}
+}
+
+func keysOf(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
 func TestParseHunkLines(t *testing.T) {
 	diff := `diff --git a/foo.md b/foo.md
 index 1234..5678 100644

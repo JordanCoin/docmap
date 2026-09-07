@@ -246,6 +246,8 @@ type Document struct {
 	Sections    []*Section
 	References  []Reference // Links to other .md files
 	Nodes       []Node      // Typed AST (populated by the new parser)
+
+	sourceLines []string // lazy cache for SourceSpan; split once per document
 }
 
 // Reference represents a link to another markdown file
@@ -386,11 +388,12 @@ func (d *Document) GetSection(name string) *Section {
 
 // SourceSpan returns the original source for the inclusive 1-based line
 // range. Empty when Source was not captured (PDF) or the range is invalid.
+// Lines are split once per document and reused across calls.
 func (d *Document) SourceSpan(start, end int) string {
 	if d == nil || d.Source == "" {
 		return ""
 	}
-	lines := strings.Split(d.Source, "\n")
+	lines := d.cachedSourceLines()
 	if start < 1 {
 		start = 1
 	}
@@ -401,6 +404,13 @@ func (d *Document) SourceSpan(start, end int) string {
 		return ""
 	}
 	return strings.Join(lines[start-1:end], "\n")
+}
+
+func (d *Document) cachedSourceLines() []string {
+	if d.sourceLines == nil {
+		d.sourceLines = strings.Split(d.Source, "\n")
+	}
+	return d.sourceLines
 }
 
 func findSection(sections []*Section, name string) *Section {

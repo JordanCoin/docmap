@@ -139,7 +139,7 @@ func TestOutputBriefCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	outputBrief(docs, dir, 0)
+	outputBrief(docs, dir, 0, false)
 	w.Close()
 	os.Stdout = old
 	buf := make([]byte, 4096)
@@ -147,6 +147,37 @@ func TestOutputBriefCounts(t *testing.T) {
 	out := string(buf[:n])
 	if !strings.Contains(out, "2 files") || !strings.Contains(out, "2 md") {
 		t.Fatalf("brief counts, got %q", out)
+	}
+	if !strings.Contains(out, "stale: run with --brief --stale") {
+		t.Fatalf("brief without stale should hint, got %q", out)
+	}
+	if strings.Contains(out, "stale: none") || strings.Contains(out, "stale: 0") {
+		t.Fatalf("brief without stale must skip Check, got %q", out)
+	}
+}
+
+func TestOutputBriefWithStale(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "ok.md"), "# Ok\n\nAll good.\n")
+	docs := parseDirectoryOpts(dir, true)
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	outputBrief(docs, dir, 0, true)
+	w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+	if strings.Contains(out, "stale: run with --brief --stale") {
+		t.Fatalf("brief --stale should run Check, got %q", out)
+	}
+	if !strings.Contains(out, "stale:") {
+		t.Fatalf("brief --stale should report stale count, got %q", out)
 	}
 }
 

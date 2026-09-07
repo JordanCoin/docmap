@@ -92,7 +92,8 @@ Searches section titles and content *plus* the typed AST: code block languages, 
 ```bash
 docmap file.md --section "Installation"    # Just that subtree
 docmap file.md --expand "Installation"      # Raw source of that section (file:L-L)
-docmap . --brief                            # Session-start counts + recent docs
+docmap . --brief                            # Session-start counts + recent docs (skips stale)
+docmap . --brief --stale                    # Brief plus stale claim count
 docmap . --stale                            # Flag stale path/binary/date/env claims
 docmap . --stale --remote --json            # Also check URLs/config (network)
 docmap . --mentions src/foo.go              # Sections that mention a changed path

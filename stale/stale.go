@@ -37,28 +37,45 @@ type Options struct {
 	HTTPHead func(url string) (status int, err error)
 }
 
+// checkCtx holds per-Check caches so GitRoot / Stat / path work runs once.
+type checkCtx struct {
+	opt       Options
+	repoRoot  string
+	home      string
+	statCache map[string]bool
+	cfg       configIndex
+	helpCache *sync.Map
+}
+
 // Check walks every section in docs and returns sorted findings.
 func Check(docs []*parser.Document, opt Options) []Finding {
 	opt = normalize(opt)
-	cfg := loadConfigIndex(opt.Root)
-	helpCache := &sync.Map{}
+	home, _ := os.UserHomeDir()
+	ctx := &checkCtx{
+		opt:       opt,
+		repoRoot:  parser.GitRoot(opt.Root),
+		home:      home,
+		statCache: map[string]bool{},
+		cfg:       loadConfigIndex(opt.Root),
+		helpCache: &sync.Map{},
+	}
 	var out []Finding
 	for _, doc := range docs {
 		docRoot := filepath.Join(opt.Root, filepath.Dir(doc.Filename))
 		for _, sec := range doc.GetAllSections() {
-			text := sectionText(doc, sec)
+			text := sectionText(sec)
 			if text == "" {
 				continue
 			}
 			crumb := breadcrumb(sec)
-			out = append(out, checkPaths(doc.Filename, crumb, text, opt, docRoot)...)
-			out = append(out, checkCommands(doc.Filename, crumb, text, opt, helpCache)...)
+			out = append(out, checkPaths(doc.Filename, crumb, text, ctx, docRoot)...)
+			out = append(out, checkCommands(doc.Filename, crumb, text, opt, ctx.helpCache)...)
 			out = append(out, checkDates(doc.Filename, crumb, sec, text, opt)...)
-			out = append(out, checkEnvKeys(doc.Filename, crumb, text, cfg)...)
+			out = append(out, checkEnvKeys(doc.Filename, crumb, text, ctx.cfg)...)
 			if opt.Remote {
 				out = append(out, checkURLs(doc.Filename, crumb, text, doc, opt)...)
 				out = append(out, checkVersions(doc.Filename, crumb, text, opt)...)
-				out = append(out, checkConfigValues(doc.Filename, crumb, text, cfg)...)
+				out = append(out, checkConfigValues(doc.Filename, crumb, text, ctx.cfg)...)
 			}
 		}
 	}
@@ -116,9 +133,14 @@ func normalize(opt Options) Options {
 	return opt
 }
 
-func sectionText(doc *parser.Document, sec *parser.Section) string {
-	if span := doc.SourceSpan(sec.LineStart, sec.LineEnd); span != "" {
-		return span
+// sectionText returns only this section's own title+body (not nested children).
+// Parent SourceSpan re-scans child backticks and duplicated findings / Stats.
+func sectionText(sec *parser.Section) string {
+	if sec == nil {
+		return ""
+	}
+	if sec.Content == "" {
+		return sec.Title
 	}
 	return sec.Title + "\n" + sec.Content
 }
@@ -166,7 +188,7 @@ func looksLikePath(s string) bool {
 	if strings.HasPrefix(s, "--") || strings.HasPrefix(s, "-") {
 		return false
 	}
-	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+	if skipPathCandidate(s) {
 		return false
 	}
 	if strings.Contains(s, "/") || strings.HasPrefix(s, "~/") || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
@@ -186,15 +208,58 @@ func looksLikePath(s string) bool {
 	return false
 }
 
-func checkPaths(file, section, text string, opt Options, docDir string) []Finding {
-	home, _ := os.UserHomeDir()
-	repo := parser.GitRoot(opt.Root)
+var (
+	winEnvPathRe = regexp.MustCompile(`%[A-Za-z][A-Za-z0-9_]*%`)
+)
+
+// skipPathCandidate rejects scheme URLs, Windows/%ENV% vars, $HOME (unless ~/),
+// and API-style /v1/... paths before any Stat.
+func skipPathCandidate(s string) bool {
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") {
+		return true
+	}
+	if i := strings.Index(s, "://"); i > 0 {
+		scheme := s[:i]
+		if scheme != "" && !strings.ContainsAny(scheme, "/\\.") {
+			return true // booklink://, vscode://, etc.
+		}
+	}
+	if winEnvPathRe.MatchString(s) {
+		return true
+	}
+	if strings.HasPrefix(s, "$") && !strings.HasPrefix(s, "$/") {
+		return true // $HOME/foo, ${VAR}/x — not a literal path we can Stat
+	}
+	// API-ish absolute paths: /v1/..., /api/...
+	if strings.HasPrefix(s, "/") {
+		rest := strings.TrimPrefix(s, "/")
+		if strings.HasPrefix(rest, "api/") || rest == "graphql" || strings.HasPrefix(rest, "graphql/") {
+			return true
+		}
+		if strings.HasPrefix(rest, "v") && len(rest) > 1 {
+			digits := 0
+			for _, c := range rest[1:] {
+				if c >= '0' && c <= '9' {
+					digits++
+					continue
+				}
+				break
+			}
+			if digits > 0 && (len(rest) == 1+digits || rest[1+digits] == '/') {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func checkPaths(file, section, text string, ctx *checkCtx, docDir string) []Finding {
 	var out []Finding
 	for _, tick := range backticks(text) {
 		if !looksLikePath(tick) {
 			continue
 		}
-		if pathExists(tick, opt.Root, repo, docDir, home) {
+		if pathExists(tick, ctx, docDir) {
 			continue
 		}
 		out = append(out, Finding{
@@ -207,28 +272,35 @@ func checkPaths(file, section, text string, opt Options, docDir string) []Findin
 	return out
 }
 
-func pathExists(raw, root, repo, docDir, home string) bool {
-	cand := expandPath(raw, home)
-	bases := []string{docDir, root}
-	if repo != "" {
-		bases = append(bases, repo)
-	}
+func pathExists(raw string, ctx *checkCtx, docDir string) bool {
+	cand := expandPath(raw, ctx.home)
 	if filepath.IsAbs(cand) {
-		if st, err := os.Stat(cand); err == nil && (st.Mode().IsRegular() || st.IsDir()) {
-			return true
-		}
-		return false
+		return cachedStat(ctx, cand)
+	}
+	bases := []string{docDir, ctx.opt.Root}
+	if ctx.repoRoot != "" {
+		bases = append(bases, ctx.repoRoot)
 	}
 	for _, base := range bases {
 		if base == "" {
 			continue
 		}
 		p := filepath.Join(base, filepath.FromSlash(cand))
-		if st, err := os.Stat(p); err == nil && (st.Mode().IsRegular() || st.IsDir()) {
+		if cachedStat(ctx, p) {
 			return true
 		}
 	}
 	return false
+}
+
+func cachedStat(ctx *checkCtx, p string) bool {
+	if v, ok := ctx.statCache[p]; ok {
+		return v
+	}
+	st, err := os.Stat(p)
+	ok := err == nil && (st.Mode().IsRegular() || st.IsDir())
+	ctx.statCache[p] = ok
+	return ok
 }
 
 func expandPath(raw, home string) string {
@@ -552,8 +624,8 @@ func checkEnvKeys(file, section, text string, cfg configIndex) []Finding {
 		if cfg.keys[k] || cfg.keys[strings.ToUpper(k)] {
 			continue
 		}
-		// Skip very common false positives
-		if k == "HTTP" || k == "HTTPS" || k == "JSON" || k == "YAML" || k == "URL" || k == "API" || k == "CLI" || k == "GPU" || k == "CPU" || k == "README" || k == "LICENSE" {
+		// Skip very common false positives and CI/runner env vars.
+		if skipEnvKey(k) {
 			continue
 		}
 		out = append(out, Finding{
@@ -564,6 +636,17 @@ func checkEnvKeys(file, section, text string, cfg configIndex) []Finding {
 		})
 	}
 	return out
+}
+
+func skipEnvKey(k string) bool {
+	switch k {
+	case "HTTP", "HTTPS", "JSON", "YAML", "URL", "API", "CLI", "GPU", "CPU", "README", "LICENSE", "CI":
+		return true
+	}
+	if strings.HasPrefix(k, "GITHUB_") || strings.HasPrefix(k, "RUNNER_") {
+		return true
+	}
+	return false
 }
 
 var urlRe = regexp.MustCompile(`https?://[^\s)\]>` + "`\"'" + `]+`)

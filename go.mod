@@ -3,6 +3,7 @@ module github.com/JordanCoin/docmap
 go 1.25.5
 
 require (
+	github.com/charlievieth/fastwalk v1.0.14
 	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
 	github.com/mattn/go-runewidth v0.0.16
 	github.com/yuin/goldmark v1.8.2
