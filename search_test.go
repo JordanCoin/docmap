@@ -26,11 +26,11 @@ func TestSearchRootsTermsCompactAndJSON(t *testing.T) {
 	if err := os.WriteFile(b+"/two.md", []byte("# Beta\nhello"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	docs, err := parsePath(a)
+	docs, err := parsePath(a, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := parsePath(b)
+	other, err := parsePath(b, false)
 	if err != nil {
 		t.Fatal(err)
 	}
