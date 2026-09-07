@@ -18,7 +18,8 @@ docmap .                            # Directory inventory + per-file digest
 docmap README.md                    # Single file: dense tree with notables
 docmap README.md --section "API"    # Filter to one section
 docmap README.md --expand "API"     # Show raw content of a section
-docmap . --brief                    # Session-start digest
+docmap . --brief                    # Session-start digest (skips stale)
+docmap . --brief --stale            # Brief plus stale claim count
 docmap . --stale                    # Flag stale path/binary/date/env claims
 docmap . --stale --remote           # Also HEAD-check URLs / config values
 docmap . --mentions path/to/file.go # Docs that mention a changed path

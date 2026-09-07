@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,4 +163,90 @@ func hasKind(fs []Finding, kind string) bool {
 		}
 	}
 	return false
+}
+
+func TestSkipSchemeAndAPIPaths(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "paths.md"), "# Paths\n\n## Refs\n\nSee `booklink://x`, `%APPDATA%/foo`, `$HOME/bar`, `/v1/users`, `/api/orders`, and `really/missing/file.go`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "paths.md")))
+	doc.Filename = "paths.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	for _, f := range findings {
+		for _, bad := range []string{"booklink", "%APPDATA%", "$HOME", "/v1/", "/api/"} {
+			if strings.Contains(f.Reason, bad) {
+				t.Fatalf("should skip %s, got %+v", bad, findings)
+			}
+		}
+	}
+	if !hasKind(findings, "missing_path") {
+		t.Fatalf("expected real missing path, got %+v", findings)
+	}
+}
+
+func TestSkipCIEnvKeys(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".env.example"), "APP_KEY=1\n")
+	write(t, filepath.Join(root, "ci.md"), "# CI\n\n## Env\n\nUses `$GITHUB_TOKEN` and `$RUNNER_OS` and `$CI` and `$MISSING_CI_KEY`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "ci.md")))
+	doc.Filename = "ci.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	for _, f := range findings {
+		if strings.Contains(f.Reason, "GITHUB_TOKEN") || strings.Contains(f.Reason, "RUNNER_OS") ||
+			(f.Kind == "missing_env" && strings.Contains(f.Reason, "`CI`")) {
+			t.Fatalf("CI keys should be allowlisted: %+v", findings)
+		}
+	}
+	found := false
+	for _, f := range findings {
+		if f.Kind == "missing_env" && strings.Contains(f.Reason, "MISSING_CI_KEY") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected MISSING_CI_KEY, got %+v", findings)
+	}
+}
+
+func TestLeafOnlyNoParentDupes(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "nest.md"), "# Parent\n\n## Child\n\nMissing `only/in/child.go`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "nest.md")))
+	doc.Filename = "nest.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	n := 0
+	for _, f := range findings {
+		if f.Kind == "missing_path" && strings.Contains(f.Reason, "only/in/child.go") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("expected one finding for child path, got %d: %+v", n, findings)
+	}
+	for _, f := range findings {
+		if f.Section == "Parent" && strings.Contains(f.Reason, "only/in/child.go") {
+			t.Fatalf("parent should not claim child path: %+v", findings)
+		}
+	}
+}
+
+func TestPathStatMemoized(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.md"), "# A\n\n## One\n\nSee `shared/missing.go`.\n\n## Two\n\nAgain `shared/missing.go`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "a.md")))
+	doc.Filename = "a.md"
+	opt := Options{Root: root}
+	opt = normalize(opt)
+	ctx := &checkCtx{
+		opt:       opt,
+		repoRoot:  "",
+		statCache: map[string]bool{},
+		cfg:       configIndex{keys: map[string]bool{}, values: map[string]map[string]bool{}},
+		helpCache: &sync.Map{},
+	}
+	_ = checkPaths("a.md", "A > One", "See `shared/missing.go`.", ctx, root)
+	nAfterFirst := len(ctx.statCache)
+	_ = checkPaths("a.md", "A > Two", "Again `shared/missing.go`.", ctx, root)
+	if len(ctx.statCache) != nAfterFirst {
+		t.Fatalf("stat cache grew on repeat path: before %d after %d keys=%v", nAfterFirst, len(ctx.statCache), ctx.statCache)
+	}
 }

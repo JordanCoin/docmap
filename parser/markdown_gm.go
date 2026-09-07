@@ -7,9 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
 	extast "github.com/yuin/goldmark/extension/ast"
 	"github.com/yuin/goldmark/text"
 )
@@ -23,14 +21,10 @@ func parseWithGoldmark(source []byte) []Node {
 	// Step 1: split frontmatter off the top of the file.
 	fmNode, body, fmLines := splitFrontmatter(source)
 
-	// Step 2: parse the body with goldmark + GFM + footnote + definition list.
-	md := goldmark.New(
-		goldmark.WithExtensions(
-			extension.GFM,
-			extension.Footnote,
-			extension.DefinitionList,
-		),
-	)
+	// Step 2: parse the body with a pooled goldmark + GFM + footnote +
+	// definition list instance (goldmark is not goroutine-safe).
+	md := getGoldmark()
+	defer putGoldmark(md)
 	reader := text.NewReader(body)
 	root := md.Parser().Parse(reader)
 
