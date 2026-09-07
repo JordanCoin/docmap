@@ -9,12 +9,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JordanCoin/docmap/internal/docset"
 	"github.com/JordanCoin/docmap/parser"
 )
 
 func TestParseDirectory(t *testing.T) {
 	// Test with current directory (should find README.md at minimum)
-	docs := parseDirectory(".")
+	docs := docset.LoadDir(".", false)
 
 	if len(docs) == 0 {
 		t.Error("expected to find at least one markdown file")
@@ -62,13 +63,13 @@ func TestParseDirectorySkipsDependencyDirs(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "vendor", "lib", "CHANGELOG.md"), "# Vendor\n")
 	writeFile(t, filepath.Join(dir, "sub", "node_modules", "x", "README.md"), "# Nested dep\n")
 
-	got := docNames(parseDirectoryOpts(dir, false))
+	got := docNames(docset.LoadDir(dir, false))
 	want := []string{"README.md", "docs/guide.md"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("default walk: got %v, want %v", got, want)
 	}
 
-	all := docNames(parseDirectoryOpts(dir, true))
+	all := docNames(docset.LoadDir(dir, true))
 	if len(all) != 5 {
 		t.Errorf("--all walk: got %d docs %v, want 5", len(all), all)
 	}
@@ -89,13 +90,13 @@ func TestParseDirectoryHonorsGitignore(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "notes.tmp.md"), "# Scratch\n")
 	writeFile(t, filepath.Join(dir, "docs", "untracked.md"), "# Untracked but not ignored\n")
 
-	got := docNames(parseDirectoryOpts(dir, false))
+	got := docNames(docset.LoadDir(dir, false))
 	want := []string{"README.md", "docs/untracked.md"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("gitignore walk: got %v, want %v", got, want)
 	}
 
-	all := docNames(parseDirectoryOpts(dir, true))
+	all := docNames(docset.LoadDir(dir, true))
 	if len(all) != 4 {
 		t.Errorf("--all walk: got %d docs %v, want 4", len(all), all)
 	}
@@ -105,7 +106,7 @@ func TestOutputMentionsFindsPath(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "guide.md"), "# Guide\n\nSee `parser/git.go` when diffs break.\n")
 	writeFile(t, filepath.Join(dir, "other.md"), "# Other\n\nNo git path here.\n")
-	docs := parseDirectoryOpts(dir, true)
+	docs := docset.LoadDir(dir, true)
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -174,7 +175,7 @@ func TestOutputBriefCounts(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "a.md"), "# A\n\n## One\n\ntext\n")
 	writeFile(t, filepath.Join(dir, "b.md"), "# B\n\n## Two\n\ntext\n")
-	docs := parseDirectoryOpts(dir, true)
+	docs := docset.LoadDir(dir, true)
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -202,7 +203,7 @@ func TestOutputBriefCounts(t *testing.T) {
 func TestOutputBriefWithStale(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "ok.md"), "# Ok\n\nAll good.\n")
-	docs := parseDirectoryOpts(dir, true)
+	docs := docset.LoadDir(dir, true)
 
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -234,7 +235,7 @@ func TestConvertSectionsSince(t *testing.T) {
 	for i := sec.LineStart; i <= sec.LineEnd; i++ {
 		changed[i] = true
 	}
-	got := convertSectionsSince(doc.Sections, changed)
+	got := docset.ConvertSectionsSince(doc.Sections, changed)
 	if len(got) == 0 {
 		t.Fatal("expected parent section in since JSON")
 	}

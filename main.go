@@ -6,21 +6,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
+	"github.com/JordanCoin/docmap/internal/docset"
 	docmapmcp "github.com/JordanCoin/docmap/mcp"
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/render"
 	"github.com/JordanCoin/docmap/stale"
-	"github.com/charlievieth/fastwalk"
 )
 
 // StdinManifest represents the JSON manifest read from stdin
@@ -33,90 +29,6 @@ type StdinManifest struct {
 type ManifestFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
-}
-
-// JSON output structures
-type JSONOutput struct {
-	Root        string         `json:"root"`
-	Since       string         `json:"since,omitempty"`
-	TotalTokens int            `json:"total_tokens"`
-	TotalDocs   int            `json:"total_docs"`
-	Documents   []JSONDocument `json:"documents"`
-}
-
-type JSONDocument struct {
-	Filename     string        `json:"filename"`
-	Change       string        `json:"change,omitempty"`
-	OldPath      string        `json:"old_path,omitempty"`
-	ChangedLines []int         `json:"changed_lines,omitempty"`
-	Tokens       int           `json:"tokens"`
-	Summary      JSONSummary   `json:"summary"`
-	Sections     []JSONSection `json:"sections"`
-	Nodes        []JSONNode    `json:"nodes,omitempty"`
-	References   []JSONRef     `json:"references,omitempty"`
-}
-
-// JSONSummary mirrors parser.ContentSummary for JSON consumers.
-type JSONSummary struct {
-	Callouts     int `json:"callouts,omitempty"`
-	Tables       int `json:"tables,omitempty"`
-	CodeBlocks   int `json:"code_blocks,omitempty"`
-	MathBlocks   int `json:"math_blocks,omitempty"`
-	HTMLBlocks   int `json:"html_blocks,omitempty"`
-	Footnotes    int `json:"footnotes,omitempty"`
-	DefLists     int `json:"definition_lists,omitempty"`
-	LinkRefDefs  int `json:"link_ref_defs,omitempty"`
-	Tasks        int `json:"tasks,omitempty"`
-	TasksChecked int `json:"tasks_checked,omitempty"`
-	WikiLinks    int `json:"wiki_links,omitempty"`
-	WikiEmbeds   int `json:"wiki_embeds,omitempty"`
-	Mentions     int `json:"mentions,omitempty"`
-	IssueRefs    int `json:"issue_refs,omitempty"`
-	CommitRefs   int `json:"commit_refs,omitempty"`
-	Emojis       int `json:"emojis,omitempty"`
-}
-
-type JSONSection struct {
-	Level     int           `json:"level"`
-	Title     string        `json:"title"`
-	Tokens    int           `json:"tokens"`
-	LineStart int           `json:"line_start,omitempty"`
-	LineEnd   int           `json:"line_end,omitempty"`
-	KeyTerms  []string      `json:"key_terms,omitempty"`
-	Notables  []JSONNode    `json:"notables,omitempty"`
-	Children  []JSONSection `json:"children,omitempty"`
-}
-
-// JSONNode is the typed-AST-aware serialization format. `Kind` identifies
-// the node type (e.g. "code_block", "callout"); remaining fields are
-// populated per kind. Agents can switch on Kind to deserialize.
-type JSONNode struct {
-	Kind      string     `json:"kind"`
-	LineStart int        `json:"line_start,omitempty"`
-	LineEnd   int        `json:"line_end,omitempty"`
-	Tokens    int        `json:"tokens,omitempty"`
-	Title     string     `json:"title,omitempty"`    // Heading
-	Level     int        `json:"level,omitempty"`    // Heading
-	Language  string     `json:"language,omitempty"` // CodeBlock
-	Code      string     `json:"code,omitempty"`     // CodeBlock
-	Variant   string     `json:"variant,omitempty"`  // Callout
-	Headers   []string   `json:"headers,omitempty"`  // Table
-	Aligns    []string   `json:"aligns,omitempty"`   // Table
-	TeX       string     `json:"tex,omitempty"`      // MathBlock / InlineMath
-	ID        string     `json:"id,omitempty"`       // FootnoteDef
-	Label     string     `json:"label,omitempty"`    // LinkRefDef
-	URL       string     `json:"url,omitempty"`      // LinkRefDef / Link
-	Checked   *bool      `json:"checked,omitempty"`  // TaskItem
-	Raw       string     `json:"raw,omitempty"`      // HTMLBlock / Frontmatter
-	Format    string     `json:"format,omitempty"`   // Frontmatter
-	Target    string     `json:"target,omitempty"`   // WikiLink / WikiEmbed
-	Children  []JSONNode `json:"children,omitempty"`
-}
-
-type JSONRef struct {
-	Text   string `json:"text"`
-	Target string `json:"target"`
-	Line   int    `json:"line"`
 }
 
 var version = "dev"
@@ -356,7 +268,7 @@ func main() {
 		}
 
 		// Parse the temp directory
-		docs := parseDirectory(tmpDir)
+		docs := docset.LoadDir(tmpDir, false)
 		if len(docs) == 0 {
 			fmt.Println("No markdown, PDF, or YAML files found")
 			os.Exit(1)
@@ -382,7 +294,7 @@ func main() {
 	if len(targets) > 1 {
 		var docs []*parser.Document
 		for _, path := range targets {
-			parsed, err := parsePath(path, walkAll)
+			parsed, err := docset.LoadPath(path, walkAll)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -414,7 +326,7 @@ func main() {
 
 	if info.IsDir() {
 		// Multi-file mode: find all .md files
-		docs := parseDirectoryOpts(target, walkAll)
+		docs := docset.LoadDir(target, walkAll)
 		if len(docs) == 0 {
 			fmt.Println("No markdown, PDF, or YAML files found")
 			os.Exit(1)
@@ -446,7 +358,7 @@ func main() {
 		}
 	} else {
 		// Single file mode
-		doc, err := parseSingleFile(target)
+		doc, err := parser.ParseFile(target)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error parsing file: %v\n", err)
 			os.Exit(1)
@@ -488,154 +400,6 @@ func main() {
 			render.Tree(doc)
 		}
 	}
-}
-
-// skipDirs are dependency and build caches that never hold project docs.
-// Walking node_modules alone turns a 90-file repo into 1,700 "docs" (#4).
-var skipDirs = map[string]bool{
-	"node_modules": true,
-	".git":         true,
-	"vendor":       true,
-	".venv":        true,
-	"venv":         true,
-	"__pycache__":  true,
-	".next":        true,
-	".cache":       true,
-	".docmap":      true,
-}
-
-// gitTrackedSet returns the set of files git considers part of the project
-// under dir (tracked plus untracked-but-not-ignored), keyed by path relative
-// to dir. It returns nil when dir is not inside a git work tree or git is not
-// available, in which case callers fall back to skipDirs only.
-func gitTrackedSet(dir string) map[string]bool {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return nil
-	}
-	if eval, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
-		abs = eval
-	}
-	inside, err := exec.Command("git", "-C", abs, "rev-parse", "--is-inside-work-tree").Output()
-	if err != nil || strings.TrimSpace(string(inside)) != "true" {
-		return nil
-	}
-	cmd := exec.Command("git", "-C", abs, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ".")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-	set := make(map[string]bool)
-	for _, rel := range strings.Split(string(out), "\x00") {
-		if rel != "" {
-			set[filepath.ToSlash(rel)] = true
-		}
-	}
-	return set
-}
-
-func parseDirectory(dir string) []*parser.Document {
-	return parseDirectoryOpts(dir, false)
-}
-
-// parseDirectoryOpts walks dir for markdown, PDF and YAML documents. Unless
-// all is true it skips dependency directories and honors .gitignore.
-// Collection uses charlievieth/fastwalk (parallel WalkDir); parsing uses a
-// worker pool bounded by GOMAXPROCS. Results are sorted by Filename.
-func parseDirectoryOpts(dir string, all bool) []*parser.Document {
-	var tracked map[string]bool
-	if !all {
-		tracked = gitTrackedSet(dir)
-	}
-
-	var (
-		pathMu sync.Mutex
-		paths  []string
-	)
-
-	_ = fastwalk.Walk(nil, dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() {
-			if !all && path != dir && skipDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		lowerPath := strings.ToLower(path)
-		isMd := strings.HasSuffix(lowerPath, ".md")
-		isPdf := strings.HasSuffix(lowerPath, ".pdf")
-		isYaml := strings.HasSuffix(lowerPath, ".yaml") || strings.HasSuffix(lowerPath, ".yml")
-		if !isMd && !isPdf && !isYaml {
-			return nil
-		}
-
-		// Skip hidden files
-		if strings.HasPrefix(d.Name(), ".") {
-			return nil
-		}
-
-		// Honor .gitignore: inside a git work tree only project files count.
-		if tracked != nil {
-			rel, relErr := filepath.Rel(dir, path)
-			if relErr == nil && !tracked[filepath.ToSlash(rel)] {
-				return nil
-			}
-		}
-
-		pathMu.Lock()
-		paths = append(paths, path)
-		pathMu.Unlock()
-		return nil
-	})
-
-	workers := runtime.GOMAXPROCS(0)
-	if workers < 1 {
-		workers = 1
-	}
-	if n := len(paths); n < workers {
-		workers = n
-	}
-
-	var (
-		docsMu sync.Mutex
-		docs   []*parser.Document
-		wg     sync.WaitGroup
-	)
-	jobs := make(chan string)
-
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for path := range jobs {
-				doc, err := parser.ParseFile(path)
-				if err != nil {
-					continue
-				}
-
-				relPath, _ := filepath.Rel(dir, path)
-				doc.Filename = relPath
-
-				docsMu.Lock()
-				docs = append(docs, doc)
-				docsMu.Unlock()
-			}
-		}()
-	}
-
-	for _, path := range paths {
-		jobs <- path
-	}
-	close(jobs)
-	wg.Wait()
-
-	sort.Slice(docs, func(i, j int) bool {
-		return docs[i].Filename < docs[j].Filename
-	})
-	return docs
 }
 
 func outputChangedSince(docs []*parser.Document, root, ref string) {
@@ -760,7 +524,7 @@ func outputBrief(docs []*parser.Document, root string, days int, runStale bool) 
 
 	recent := parser.RecentFiles(root, 5)
 	if len(recent) == 0 {
-		recent = recentByMtime(docs, root, 5)
+		recent = docset.RecentByMtime(docs, root, 5)
 	}
 	if len(recent) > 0 {
 		fmt.Printf("recent: %s\n", strings.Join(recent, ", "))
@@ -810,30 +574,6 @@ func briefTokens(n int) string {
 		return fmt.Sprintf("%.1fk", float64(n)/1000.0)
 	}
 	return strconv.Itoa(n)
-}
-
-func recentByMtime(docs []*parser.Document, root string, limit int) []string {
-	type rec struct {
-		name string
-		mod  int64
-	}
-	var rows []rec
-	for _, d := range docs {
-		info, err := os.Stat(filepath.Join(root, d.Filename))
-		if err != nil {
-			continue
-		}
-		rows = append(rows, rec{d.Filename, info.ModTime().UnixNano()})
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].mod > rows[j].mod })
-	if len(rows) > limit {
-		rows = rows[:limit]
-	}
-	out := make([]string, len(rows))
-	for i, r := range rows {
-		out[i] = r.name
-	}
-	return out
 }
 
 func outputMentions(docs []*parser.Document, paths []string) {
@@ -973,26 +713,6 @@ func stdinIsPipe() bool {
 	return st.Mode()&os.ModeCharDevice == 0
 }
 
-func parsePath(path string, all bool) ([]*parser.Document, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if info.IsDir() {
-		return parseDirectoryOpts(path, all), nil
-	}
-	doc, err := parseSingleFile(path)
-	if err != nil {
-		return nil, err
-	}
-	doc.Filename = filepath.Base(path)
-	return []*parser.Document{doc}, nil
-}
-
-func parseSingleFile(path string) (*parser.Document, error) {
-	return parser.ParseFile(path)
-}
-
 func readTerms(search, filename string) ([]string, error) {
 	var terms []string
 	if search != "" {
@@ -1061,33 +781,7 @@ func outputSearch(docs []*parser.Document, terms []string, jsonMode, compact boo
 }
 
 func outputJSON(docs []*parser.Document, root string) {
-	output := JSONOutput{
-		Root:      root,
-		TotalDocs: len(docs),
-	}
-
-	for _, doc := range docs {
-		jsonDoc := JSONDocument{
-			Filename: doc.Filename,
-			Tokens:   doc.TotalTokens,
-			Summary:  convertSummary(doc.Summary()),
-			Sections: convertSections(doc.Sections),
-			Nodes:    convertNodeList(doc.Nodes),
-		}
-
-		for _, ref := range doc.References {
-			jsonDoc.References = append(jsonDoc.References, JSONRef{
-				Text:   ref.Text,
-				Target: ref.Target,
-				Line:   ref.Line,
-			})
-		}
-
-		output.Documents = append(output.Documents, jsonDoc)
-		output.TotalTokens += doc.TotalTokens
-	}
-
-	json.NewEncoder(os.Stdout).Encode(output)
+	json.NewEncoder(os.Stdout).Encode(docset.DocumentsJSON(root, docs))
 }
 
 func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
@@ -1096,7 +790,7 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 		os.Exit(1)
 	}
 	status := changeStatusByPath(root, ref)
-	output := JSONOutput{
+	output := docset.JSONOutput{
 		Root:  absRoot,
 		Since: ref,
 	}
@@ -1123,22 +817,22 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 			ch = pc.Status
 			oldPath = pc.OldPath
 		}
-		jsonDoc := JSONDocument{
+		jsonDoc := docset.JSONDocument{
 			Filename:     doc.Filename,
 			Change:       ch,
 			OldPath:      oldPath,
 			ChangedLines: lines,
 			Tokens:       doc.TotalTokens,
-			Summary:      convertSummary(doc.Summary()),
-			Sections:     convertSectionsSince(doc.Sections, changed),
-			Nodes:        convertNodesSince(doc.Nodes, changed),
+			Summary:      docset.ConvertSummary(doc.Summary()),
+			Sections:     docset.ConvertSectionsSince(doc.Sections, changed),
+			Nodes:        docset.ConvertNodesSince(doc.Nodes, changed),
 		}
 		output.Documents = append(output.Documents, jsonDoc)
 		output.TotalTokens += doc.TotalTokens
 		seen[filepath.ToSlash(doc.Filename)] = true
 	}
 	for _, name := range deletedDocPaths(root, ref) {
-		output.Documents = append(output.Documents, JSONDocument{
+		output.Documents = append(output.Documents, docset.JSONDocument{
 			Filename: name,
 			Change:   "D",
 		})
@@ -1147,7 +841,7 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 		if seen[c.Path] {
 			continue
 		}
-		output.Documents = append(output.Documents, JSONDocument{
+		output.Documents = append(output.Documents, docset.JSONDocument{
 			Filename: c.Path,
 			OldPath:  c.OldPath,
 			Change:   c.Status,
@@ -1155,7 +849,7 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 	}
 	output.TotalDocs = len(output.Documents)
 	if output.Documents == nil {
-		output.Documents = []JSONDocument{}
+		output.Documents = []docset.JSONDocument{}
 	}
 	json.NewEncoder(os.Stdout).Encode(output)
 }
@@ -1167,160 +861,6 @@ func sortedChangedLines(changed map[int]bool) []int {
 	}
 	sort.Ints(lines)
 	return lines
-}
-
-func convertSectionsSince(sections []*parser.Section, changed map[int]bool) []JSONSection {
-	var result []JSONSection
-	for _, s := range sections {
-		kids := convertSectionsSince(s.Children, changed)
-		hit := false
-		for line := s.LineStart; line <= s.LineEnd; line++ {
-			if changed[line] {
-				hit = true
-				break
-			}
-		}
-		if !hit && len(kids) == 0 {
-			continue
-		}
-		js := JSONSection{
-			Level:     s.Level,
-			Title:     s.Title,
-			Tokens:    s.Tokens,
-			LineStart: s.LineStart,
-			LineEnd:   s.LineEnd,
-			KeyTerms:  s.KeyTerms,
-			Notables:  convertNodesSince(s.Notables, changed),
-			Children:  kids,
-		}
-		result = append(result, js)
-	}
-	return result
-}
-
-func convertNodesSince(nodes []parser.Node, changed map[int]bool) []JSONNode {
-	var out []JSONNode
-	for _, n := range nodes {
-		end := n.LineEnd()
-		if end < n.LineStart() {
-			end = n.LineStart()
-		}
-		hit := false
-		for line := n.LineStart(); line <= end; line++ {
-			if changed[line] {
-				hit = true
-				break
-			}
-		}
-		if hit {
-			out = append(out, convertNode(n))
-		}
-	}
-	return out
-}
-
-func convertSummary(s parser.ContentSummary) JSONSummary {
-	return JSONSummary{
-		Callouts:     s.Callouts,
-		Tables:       s.Tables,
-		CodeBlocks:   s.CodeBlocks,
-		MathBlocks:   s.MathBlocks,
-		HTMLBlocks:   s.HTMLBlocks,
-		Footnotes:    s.Footnotes,
-		DefLists:     s.DefLists,
-		LinkRefDefs:  s.LinkRefDefs,
-		Tasks:        s.Tasks,
-		TasksChecked: s.TasksChecked,
-		WikiLinks:    s.WikiLinks,
-		WikiEmbeds:   s.WikiEmbeds,
-		Mentions:     s.Mentions,
-		IssueRefs:    s.IssueRefs,
-		CommitRefs:   s.CommitRefs,
-		Emojis:       s.Emojis,
-	}
-}
-
-func convertSections(sections []*parser.Section) []JSONSection {
-	var result []JSONSection
-	for _, s := range sections {
-		js := JSONSection{
-			Level:     s.Level,
-			Title:     s.Title,
-			Tokens:    s.Tokens,
-			LineStart: s.LineStart,
-			LineEnd:   s.LineEnd,
-			KeyTerms:  s.KeyTerms,
-			Notables:  convertNodeList(s.Notables),
-			Children:  convertSections(s.Children),
-		}
-		result = append(result, js)
-	}
-	return result
-}
-
-func convertNodeList(nodes []parser.Node) []JSONNode {
-	var out []JSONNode
-	for _, n := range nodes {
-		out = append(out, convertNode(n))
-	}
-	return out
-}
-
-// convertNode serializes one typed AST node into JSON-friendly form.
-// Only fields relevant to the kind are populated; omitempty keeps the
-// output compact.
-func convertNode(n parser.Node) JSONNode {
-	j := JSONNode{
-		Kind:      string(n.Kind()),
-		LineStart: n.LineStart(),
-		LineEnd:   n.LineEnd(),
-		Tokens:    n.Tokens(),
-	}
-	switch v := n.(type) {
-	case *parser.Heading:
-		j.Title = v.Title
-		j.Level = v.Level
-	case *parser.CodeBlock:
-		j.Language = v.Language
-		j.Code = v.Code
-	case *parser.Callout:
-		j.Variant = string(v.Variant)
-	case *parser.Table:
-		j.Headers = v.Headers
-		for _, a := range v.Aligns {
-			j.Aligns = append(j.Aligns, string(a))
-		}
-	case *parser.MathBlock:
-		j.TeX = v.TeX
-	case *parser.InlineMath:
-		j.TeX = v.TeX
-	case *parser.FootnoteDef:
-		j.ID = v.ID
-	case *parser.LinkRefDef:
-		j.Label = v.Label
-		j.URL = v.URL
-	case *parser.Link:
-		j.URL = v.URL
-		j.Title = v.Text
-	case *parser.TaskItem:
-		checked := v.Checked
-		j.Checked = &checked
-	case *parser.HTMLBlock:
-		j.Raw = v.Raw
-	case *parser.Frontmatter:
-		j.Raw = v.Raw
-		j.Format = string(v.Format)
-	case *parser.WikiLink:
-		j.Target = v.Target
-	case *parser.WikiEmbed:
-		j.Target = v.Target
-	}
-	// Recurse into children for container nodes so the JSON tree mirrors
-	// the in-memory AST.
-	for _, c := range n.Children() {
-		j.Children = append(j.Children, convertNode(c))
-	}
-	return j
 }
 
 func printUsage() {

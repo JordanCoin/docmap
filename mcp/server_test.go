@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/JordanCoin/docmap/internal/docset"
 )
 
 func TestToolContracts(t *testing.T) {
@@ -129,7 +131,7 @@ func TestToolContracts(t *testing.T) {
 		if err != nil || res == nil || res.IsError {
 			t.Fatalf("json: res=%v err=%v", res, err)
 		}
-		jo := out.(jsonOutput)
+		jo := out.(docset.JSONOutput)
 		if jo.TotalDocs != 1 {
 			t.Fatalf("json: %#v", jo)
 		}

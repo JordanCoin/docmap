@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/JordanCoin/docmap/internal/docset"
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/stale"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -73,8 +74,8 @@ func handleTree(_ context.Context, _ *mcpsdk.CallToolRequest, in pathInput) (*mc
 		docs = append(docs, map[string]any{
 			"filename": doc.Filename,
 			"tokens":   doc.TotalTokens,
-			"summary":  convertSummary(doc.Summary()),
-			"sections": convertSections(doc.Sections),
+			"summary":  docset.ConvertSummary(doc.Summary()),
+			"sections": docset.ConvertSections(doc.Sections),
 		})
 	}
 	return jsonResult(map[string]any{"root": ld.Root, "documents": docs})
@@ -105,7 +106,7 @@ func handleSection(_ context.Context, _ *mcpsdk.CallToolRequest, in sectionInput
 		}
 		hits = append(hits, map[string]any{
 			"filename": doc.Filename,
-			"section":  convertSections([]*parser.Section{sec})[0],
+			"section":  docset.ConvertSections([]*parser.Section{sec})[0],
 		})
 	}
 	if len(hits) == 0 {
@@ -163,7 +164,7 @@ func handleFindByType(_ context.Context, _ *mcpsdk.CallToolRequest, in findByTyp
 					hits = append(hits, map[string]any{
 						"filename": doc.Filename,
 						"section":  sectionBreadcrumb(s),
-						"node":     convertNode(n),
+						"node":     docset.ConvertNode(n),
 					})
 				}
 				walk(s.Children)
@@ -217,7 +218,7 @@ func handleAtLine(_ context.Context, _ *mcpsdk.CallToolRequest, in atLineInput) 
 		out["section_lines"] = []int{containing.LineStart, containing.LineEnd}
 	}
 	if found != nil {
-		out["node"] = convertNode(found)
+		out["node"] = docset.ConvertNode(found)
 	}
 	return jsonResult(out)
 }
@@ -247,7 +248,7 @@ func handleSince(_ context.Context, _ *mcpsdk.CallToolRequest, in sinceInput) (*
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	out := jsonOutput{Root: ld.Root, Since: in.Ref}
+	out := docset.JSONOutput{Root: ld.Root, Since: in.Ref}
 	seen := map[string]bool{}
 	for _, doc := range ld.Docs {
 		path := filepath.Join(ld.Root, doc.Filename)
@@ -259,12 +260,12 @@ func handleSince(_ context.Context, _ *mcpsdk.CallToolRequest, in sinceInput) (*
 		if pc, ok := status[filepath.ToSlash(doc.Filename)]; ok {
 			ch, oldPath = pc.Status, pc.OldPath
 		}
-		out.Documents = append(out.Documents, jsonDocument{
+		out.Documents = append(out.Documents, docset.JSONDocument{
 			Filename: doc.Filename, Change: ch, OldPath: oldPath,
 			ChangedLines: sortedLines(changed), Tokens: doc.TotalTokens,
-			Summary:  convertSummary(doc.Summary()),
-			Sections: convertSectionsSince(doc.Sections, changed),
-			Nodes:    convertNodesSince(doc.Nodes, changed),
+			Summary:  docset.ConvertSummary(doc.Summary()),
+			Sections: docset.ConvertSectionsSince(doc.Sections, changed),
+			Nodes:    docset.ConvertNodesSince(doc.Nodes, changed),
 		})
 		out.TotalTokens += doc.TotalTokens
 		seen[filepath.ToSlash(doc.Filename)] = true
@@ -273,9 +274,9 @@ func handleSince(_ context.Context, _ *mcpsdk.CallToolRequest, in sinceInput) (*
 		for _, c := range changes {
 			switch {
 			case c.Status == "D":
-				out.Documents = append(out.Documents, jsonDocument{Filename: c.Path, Change: "D"})
+				out.Documents = append(out.Documents, docset.JSONDocument{Filename: c.Path, Change: "D"})
 			case (c.Status == "R" || c.Status == "C") && c.OldPath != "" && !seen[c.Path]:
-				out.Documents = append(out.Documents, jsonDocument{Filename: c.Path, Change: c.Status, OldPath: c.OldPath})
+				out.Documents = append(out.Documents, docset.JSONDocument{Filename: c.Path, Change: c.Status, OldPath: c.OldPath})
 			}
 		}
 	}
