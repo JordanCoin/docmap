@@ -91,6 +91,49 @@ git add .claude/skills/docmap/SKILL.md
 
 Read the shipped SKILL.md on GitHub before installing: [plugins/docmap/skills/docmap/SKILL.md](./plugins/docmap/skills/docmap/SKILL.md).
 
+## MCP server (Cursor / Claude Code)
+
+docmap ships a stdio [MCP](https://modelcontextprotocol.io/) server so agents can call structured tools instead of shelling out to the CLI.
+
+```bash
+docmap mcp
+```
+
+Tools: `docmap_brief`, `docmap_tree`, `docmap_since`, `docmap_stale`, `docmap_search`, `docmap_at_line`.
+
+### Cursor
+
+This repo includes `.mcp.json` so Cursor can auto-enable the server when the project is open (requires `docmap` on your `PATH`). Or add it manually in Cursor MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "docmap": {
+      "command": "docmap",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+From a local checkout without installing globally:
+
+```json
+{
+  "mcpServers": {
+    "docmap": {
+      "command": "go",
+      "args": ["run", ".", "mcp"],
+      "cwd": "/absolute/path/to/docmap"
+    }
+  }
+}
+```
+
+### Claude Code
+
+Same `.mcp.json` shape works for Claude Code project MCP config. After `brew install` / `go install`, `docmap mcp` is the server entrypoint.
+
 ## Usage
 
 ```bash

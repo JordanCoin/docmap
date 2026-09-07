@@ -29,5 +29,4 @@ dist/
 # Local agent/MCP tooling state (not part of the project source)
 .architect/
 .serena/
-.mcp.json
 firebase-debug.log
