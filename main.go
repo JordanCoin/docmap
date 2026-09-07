@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	docmapmcp "github.com/JordanCoin/docmap/mcp"
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/JordanCoin/docmap/render"
 	"github.com/JordanCoin/docmap/stale"
@@ -123,6 +125,15 @@ func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
+	}
+
+	if os.Args[1] == "mcp" {
+		docmapmcp.Version = version
+		if err := docmapmcp.Run(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// Check for help/version flags first (before full parse)
@@ -1319,6 +1330,7 @@ Usage:
   docmap <file.md|file.pdf|file.yaml|dir> [flags]
   docmap <dirA> <dirB> (--search <query> | --terms-file <path>) [flags]
   docmap --stdin [flags] < manifest.json
+  docmap mcp                         # stdio MCP server
 
 Examples:
   docmap .                          # All markdown, PDF, and YAML files

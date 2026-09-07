@@ -53,19 +53,30 @@ release:
     owner: JordanCoin
     name: docmap
 
-brews:
-  - repository:
+# Homebrew bottles are not supported by GoReleaser. The previous `brews`
+# formula installed GitHub release binaries but Homebrew still treated it as a
+# source formula (no bottle), which can fail when CLT is outdated.
+# `homebrew_casks` is the supported path for prebuilt binaries and avoids the
+# compile/CLT path entirely. (Requires GoReleaser Pro for publish; OSS builds
+# still emit Darwin archives for a manually maintained Casks/docmap.rb.)
+homebrew_casks:
+  - name: docmap
+    repository:
       owner: JordanCoin
       name: homebrew-tap
       token: "{{ .Env.SCOOP_TOKEN }}"
-    directory: .
+    directory: Casks
     homepage: https://github.com/JordanCoin/docmap
     description: Instant documentation structure for LLMs and humans
     license: MIT
-    install: |
-      bin.install "docmap"
-    test: |
-      system "#{bin}/docmap", "--help"
+    binaries:
+      - docmap
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/docmap"]
+          end
 
 scoops:
   - repository:

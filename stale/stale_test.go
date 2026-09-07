@@ -253,6 +253,24 @@ func TestGoModStillFlaggedInGoRepo(t *testing.T) {
 	}
 }
 
+func TestOptionalStackWithEvidenceStillFlags(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "Cargo.toml"), "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n")
+	write(t, filepath.Join(root, "guide.md"), "# Guide\n\n## Crates\n\nSee `crates/missing/Cargo.toml`.\n")
+	doc := parser.Parse(mustRead(t, filepath.Join(root, "guide.md")))
+	doc.Filename = "guide.md"
+	findings := Check([]*parser.Document{doc}, Options{Root: root})
+	found := false
+	for _, f := range findings {
+		if f.Kind == "missing_path" && strings.Contains(f.Reason, "crates/missing/Cargo.toml") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing_path for nested Cargo.toml when Rust evidence exists, got %+v", findings)
+	}
+}
+
 func TestLeafOnlyNoParentDupes(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "nest.md"), "# Parent\n\n## Child\n\nMissing `only/in/child.go`.\n")
