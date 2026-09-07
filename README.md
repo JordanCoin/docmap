@@ -40,7 +40,8 @@ One command. Full inventory. No LLM needed.
 
 ```bash
 # macOS/Linux (cask — prebuilt binary, no CLT/compile step)
-brew tap JordanCoin/tap && brew install --cask docmap
+brew tap JordanCoin/tap && brew install docmap
+# Prebuilt release archive (no local compile). Use `brew upgrade docmap` after new tags.
 
 # Windows
 scoop bucket add docmap https://github.com/JordanCoin/scoop-docmap
