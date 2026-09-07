@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -138,6 +139,9 @@ func main() {
 	var jsonMode bool
 	var stdinMode bool
 	var target string
+	var targets []string
+	var termsFile string
+	var compact bool
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -152,10 +156,19 @@ func main() {
 				i++
 			}
 		case "--search":
-			if i+1 < len(os.Args) {
-				searchQuery = os.Args[i+1]
-				i++
+			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
+				fmt.Fprintln(os.Stderr, "Error: --search requires a query")
+				os.Exit(1)
 			}
+			searchQuery = os.Args[i+1]
+			i++
+		case "--terms-file":
+			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
+				fmt.Fprintln(os.Stderr, "Error: --terms-file requires a path")
+				os.Exit(1)
+			}
+			termsFile = os.Args[i+1]
+			i++
 		case "--type", "-t":
 			if i+1 < len(os.Args) {
 				typeFilter = os.Args[i+1]
@@ -190,11 +203,27 @@ func main() {
 			jsonMode = true
 		case "--stdin":
 			stdinMode = true
+		case "--compact":
+			compact = true
 		default:
-			if target == "" {
-				target = os.Args[i]
-			}
+			targets = append(targets, os.Args[i])
 		}
+	}
+	if len(targets) > 0 {
+		target = targets[0]
+	}
+	if compact && searchQuery == "" && termsFile == "" {
+		fmt.Fprintln(os.Stderr, "Error: --compact requires --search or --terms-file")
+		os.Exit(1)
+	}
+	terms, err := readTerms(searchQuery, termsFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	if len(targets) > 1 && len(terms) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: multiple paths are supported only with --search or --terms-file")
+		os.Exit(1)
 	}
 
 	// Handle --stdin mode
@@ -243,10 +272,10 @@ func main() {
 			os.Exit(1)
 		}
 
-		if jsonMode {
+		if len(terms) > 0 {
+			outputSearch(docs, terms, jsonMode, compact)
+		} else if jsonMode {
 			outputJSON(docs, manifest.Root)
-		} else if searchQuery != "" {
-			render.SearchResults(docs, searchQuery)
 		} else if showRefs {
 			render.RefsTree(docs, manifest.Root)
 		} else {
@@ -258,6 +287,24 @@ func main() {
 	if target == "" {
 		printUsage()
 		os.Exit(1)
+	}
+
+	if len(targets) > 1 {
+		var docs []*parser.Document
+		for _, path := range targets {
+			parsed, err := parsePath(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			docs = append(docs, parsed...)
+		}
+		if len(docs) == 0 {
+			fmt.Println("No markdown, PDF, or YAML files found")
+			os.Exit(1)
+		}
+		outputSearch(docs, terms, jsonMode, compact)
+		return
 	}
 
 	// Check if target is a directory
@@ -274,11 +321,11 @@ func main() {
 			fmt.Println("No markdown, PDF, or YAML files found")
 			os.Exit(1)
 		}
-		if jsonMode {
+		if len(terms) > 0 {
+			outputSearch(docs, terms, jsonMode, compact)
+		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
-		} else if searchQuery != "" {
-			render.SearchResults(docs, searchQuery)
 		} else if showRefs {
 			render.RefsTree(docs, target)
 		} else {
@@ -286,47 +333,18 @@ func main() {
 		}
 	} else {
 		// Single file mode
-		var doc *parser.Document
-
-		lower := strings.ToLower(target)
-		if strings.HasSuffix(lower, ".pdf") {
-			// PDF file
-			var err error
-			doc, err = parser.ParsePDF(target)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing PDF: %v\n", err)
-				os.Exit(1)
-			}
-		} else if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
-			// YAML file
-			content, err := os.ReadFile(target)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-				os.Exit(1)
-			}
-			doc, err = parser.ParseYAML(string(content))
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error parsing YAML: %v\n", err)
-				os.Exit(1)
-			}
-		} else {
-			// Markdown file
-			content, err := os.ReadFile(target)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading file: %v\n", err)
-				os.Exit(1)
-			}
-			doc = parser.Parse(string(content))
+		doc, err := parseSingleFile(target)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error parsing file: %v\n", err)
+			os.Exit(1)
 		}
+		doc.Filename = filepath.Base(target)
 
-		parts := strings.Split(target, "/")
-		doc.Filename = parts[len(parts)-1]
-
-		if jsonMode {
+		if len(terms) > 0 {
+			outputSearch([]*parser.Document{doc}, terms, jsonMode, compact)
+		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
-		} else if searchQuery != "" {
-			render.SearchResults([]*parser.Document{doc}, searchQuery)
 		} else if sinceRef != "" {
 			changed, _ := parser.ChangedLines(target, sinceRef)
 			render.ChangedSince(doc, changed, sinceRef)
@@ -406,6 +424,104 @@ func parseDirectory(dir string) []*parser.Document {
 	})
 
 	return docs
+}
+
+func parsePath(path string) ([]*parser.Document, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return parseDirectory(path), nil
+	}
+	doc, err := parseSingleFile(path)
+	if err != nil {
+		return nil, err
+	}
+	doc.Filename = filepath.Base(path)
+	return []*parser.Document{doc}, nil
+}
+
+func parseSingleFile(path string) (*parser.Document, error) {
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".pdf") {
+		return parser.ParsePDF(path)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+		return parser.ParseYAML(string(content))
+	}
+	return parser.Parse(string(content)), nil
+}
+
+func readTerms(search, filename string) ([]string, error) {
+	var terms []string
+	if search != "" {
+		terms = append(terms, search)
+	}
+	if filename == "" {
+		return terms, nil
+	}
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			terms = append(terms, line)
+		}
+	}
+	if err := s.Err(); err != nil {
+		return nil, err
+	}
+	if len(terms) == 0 {
+		return nil, fmt.Errorf("terms file contains no queries")
+	}
+	return terms, nil
+}
+
+type searchJSON struct {
+	Term    string `json:"term"`
+	File    string `json:"file"`
+	Section string `json:"section"`
+	Tokens  int    `json:"tokens"`
+}
+
+func outputSearch(docs []*parser.Document, terms []string, jsonMode, compact bool) {
+	if jsonMode {
+		var out []searchJSON
+		for _, term := range terms {
+			for _, hit := range render.FindSearchResults(docs, term) {
+				out = append(out, searchJSON{term, hit.Filename, hit.Section.Title, hit.Section.Tokens})
+			}
+		}
+		if out == nil {
+			out = []searchJSON{}
+		}
+		json.NewEncoder(os.Stdout).Encode(out)
+		return
+	}
+	for _, term := range terms {
+		hits := render.FindSearchResults(docs, term)
+		if compact {
+			if len(terms) > 1 {
+				fmt.Printf("## %s\n", term)
+			}
+			for _, hit := range hits {
+				file := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(hit.Filename)
+				section := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(hit.Section.Title)
+				fmt.Printf("%s > %s\n", file, section)
+			}
+		} else {
+			render.SearchResults(docs, term)
+		}
+	}
 }
 
 func outputJSON(docs []*parser.Document, root string) {
@@ -547,6 +663,7 @@ func printUsage() {
 
 Usage:
   docmap <file.md|file.pdf|file.yaml|dir> [flags]
+  docmap <dirA> <dirB> (--search <query> | --terms-file <path>) [flags]
   docmap --stdin [flags] < manifest.json
 
 Examples:
@@ -559,11 +676,14 @@ Examples:
   docmap README.md --expand "API"   # Show section content
   docmap . --refs                   # Show cross-references between docs
   docmap docs/ --search "auth"     # Search across all files
+  docmap dirA dirB --search "auth" --compact # Search multiple roots
   docmap --stdin --json < manifest.json  # Parse files from JSON manifest
 
 Flags:
   --stdin                Read JSON file manifest from stdin (no filesystem access needed)
   --search <query>       Search sections across all files
+  --terms-file <path>     Run one search query per non-comment, non-blank line
+  --compact               Search output as one "file > section" line per hit
   -s, --section <name>   Filter to a specific section
   -e, --expand <name>    Show full content of a section
   -t, --type <kind>      Drill into one construct: code, callout, table, math,
@@ -577,6 +697,8 @@ Flags:
   -j, --json             Output JSON format
   -v, --version          Print version
   -h, --help             Show this help
+
+Multiple positional paths are supported for search only; plain tree mode takes one path.
 
 PDF Support:
   PDFs with outlines show document structure; tokens are estimated.

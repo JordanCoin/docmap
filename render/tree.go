@@ -2,9 +2,13 @@ package render
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/JordanCoin/docmap/parser"
+	"github.com/mattn/go-runewidth"
+	"golang.org/x/term"
 )
 
 const (
@@ -42,18 +46,13 @@ func printHeader(doc *parser.Document) {
 	// Join all info lines for width calculation.
 	allLines := append([]string{mainInfo}, summaryLines...)
 
-	// Truncate long filenames for display.
 	displayName := doc.Filename
-	maxNameLen := 50
-	if len(displayName) > maxNameLen {
-		displayName = "..." + displayName[len(displayName)-maxNameLen+3:]
-	}
 
 	// Inner width = max of title, main info, and every summary line.
 	innerWidth := 60
-	titleLine := fmt.Sprintf(" %s ", displayName)
-	if len(titleLine) > innerWidth {
-		innerWidth = len(titleLine) + 4
+	titleLine := " " + displayName + " "
+	if runewidth.StringWidth(titleLine) > innerWidth {
+		innerWidth = runewidth.StringWidth(titleLine) + 4
 	}
 	for _, line := range allLines {
 		if len(line)+4 > innerWidth {
@@ -62,14 +61,12 @@ func printHeader(doc *parser.Document) {
 	}
 
 	// Top border with centered title.
-	padding := innerWidth - len(titleLine)
-	leftPad := padding / 2
-	rightPad := padding - leftPad
-	fmt.Printf("╭%s%s%s╮\n", strings.Repeat("─", leftPad), titleLine, strings.Repeat("─", rightPad))
+	top, innerWidth := boxLine(displayName, innerWidth)
+	fmt.Println(top)
 
 	// Info lines: main line, then one line per summary group.
 	for _, line := range allLines {
-		fmt.Printf("│ %-*s │\n", innerWidth-2, centerText(line, innerWidth-2))
+		fmt.Println(boxInfo(line, innerWidth))
 	}
 
 	// Bottom border.
@@ -152,11 +149,79 @@ func pluralS(n int) string {
 }
 
 func centerText(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
+	if width <= 0 {
+		return ""
 	}
-	padding := (width - len(s)) / 2
+	if runewidth.StringWidth(s) >= width {
+		return runewidth.Truncate(s, width, "")
+	}
+	padding := (width - runewidth.StringWidth(s)) / 2
 	return strings.Repeat(" ", padding) + s
+}
+
+// boxLine returns a centered title border and the effective inner width. The
+// width is capped to the terminal so long paths are shortened instead of
+// wrapping or producing negative Repeat counts.
+func boxLine(title string, minWidth int) (string, int) {
+	if minWidth < 1 {
+		minWidth = 1
+	}
+	maxInner := terminalWidth() - 2
+	if maxInner < 1 {
+		maxInner = 1
+	}
+	width := minWidth
+	titleWidth := runewidth.StringWidth(title) + 2
+	if titleWidth > width {
+		width = titleWidth
+	}
+	if width > maxInner {
+		width = maxInner
+	}
+	titleWidth = width - 2
+	titleLine := title
+	if width >= 3 {
+		title = truncateTitle(title, titleWidth)
+		titleLine = " " + title + " "
+	} else {
+		title = truncateTitle(title, width)
+		titleLine = title
+	}
+	padding := width - runewidth.StringWidth(titleLine)
+	left := padding / 2
+	right := padding - left
+	return fmt.Sprintf("╭%s%s%s╮", strings.Repeat("─", left), titleLine, strings.Repeat("─", right)), width
+}
+
+func truncateTitle(title string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(title) <= width {
+		return title
+	}
+	if width <= 3 {
+		return runewidth.Truncate(title, width, "…")
+	}
+	return runewidth.Truncate(title, width, "…")
+}
+
+func boxInfo(line string, width int) string {
+	if width < 2 {
+		return "│" + strings.Repeat(" ", width) + "│"
+	}
+	inner := width - 2
+	return "│ " + runewidth.FillRight(centerText(line, inner), inner) + " │"
+}
+
+func terminalWidth() int {
+	if n, err := strconv.Atoi(os.Getenv("COLUMNS")); err == nil && n > 2 {
+		return n
+	}
+	if width, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && width > 2 {
+		return width
+	}
+	return 80
 }
 
 func formatTokens(tokens int) string {
@@ -678,12 +743,9 @@ func printMiniHeader(title, info string) {
 	if width < 40 {
 		width = 40
 	}
-	titleLine := fmt.Sprintf(" %s ", title)
-	padding := width - len(titleLine)
-	left := padding / 2
-	right := padding - left
-	fmt.Printf("╭%s%s%s╮\n", strings.Repeat("─", left), titleLine, strings.Repeat("─", right))
-	fmt.Printf("│ %-*s │\n", width-2, centerText(info, width-2))
+	top, width := boxLine(title, width)
+	fmt.Println(top)
+	fmt.Println(boxInfo(info, width))
 	fmt.Printf("╰%s╯\n\n", strings.Repeat("─", width))
 }
 
@@ -961,12 +1023,10 @@ func MultiTree(docs []*parser.Document, dirName string) {
 	}
 
 	// Header box.
-	padding := innerWidth - len(titleLine)
-	leftPad := padding / 2
-	rightPad := padding - leftPad
-	fmt.Printf("╭%s%s%s╮\n", strings.Repeat("─", leftPad), titleLine, strings.Repeat("─", rightPad))
+	top, innerWidth := boxLine(dirName+"/", innerWidth)
+	fmt.Println(top)
 	for _, line := range allLines {
-		fmt.Printf("│ %-*s │\n", innerWidth-2, centerText(line, innerWidth-2))
+		fmt.Println(boxInfo(line, innerWidth))
 	}
 	fmt.Printf("╰%s╯\n", strings.Repeat("─", innerWidth))
 	fmt.Println()
@@ -1060,14 +1120,21 @@ type SearchResult struct {
 	Section  *parser.Section
 }
 
-// SearchResults searches all docs for sections matching the query and renders results
-func SearchResults(docs []*parser.Document, query string) {
-	query = strings.ToLower(query)
+// FindSearchResults returns sections matching query using the same title,
+// content, and typed-AST matching as the human renderer.
+func FindSearchResults(docs []*parser.Document, query string) []SearchResult {
 	var results []SearchResult
-
+	query = strings.ToLower(query)
 	for _, doc := range docs {
 		searchSections(doc.Filename, doc.Sections, "", query, &results)
 	}
+	return results
+}
+
+// SearchResults searches all docs for sections matching the query and renders results
+func SearchResults(docs []*parser.Document, query string) {
+	results := FindSearchResults(docs, query)
+	query = strings.ToLower(query)
 
 	if len(results) == 0 {
 		fmt.Printf("No sections matching '%s'\n", query)
@@ -1229,13 +1296,11 @@ func RefsTree(docs []*parser.Document, dirName string) {
 	if len(titleLine) > innerWidth {
 		innerWidth = len(titleLine) + 4
 	}
-	padding := innerWidth - len(titleLine)
-	leftPad := padding / 2
-	rightPad := padding - leftPad
-	fmt.Printf("╭%s%s%s╮\n", strings.Repeat("─", leftPad), titleLine, strings.Repeat("─", rightPad))
+	top, innerWidth := boxLine(dirName+"/", innerWidth)
+	fmt.Println(top)
 
 	info := fmt.Sprintf("References: %d links between docs", len(allRefs))
-	fmt.Printf("│ %-*s │\n", innerWidth-2, centerText(info, innerWidth-2))
+	fmt.Println(boxInfo(info, innerWidth))
 	fmt.Printf("╰%s╯\n", strings.Repeat("─", innerWidth))
 	fmt.Println()
 
