@@ -31,6 +31,8 @@ var (
 // (and any other intermediate symlink) still maps onto git's pathspec.
 //
 // New files (untracked, or added after `ref`) are treated as fully changed.
+// Renames compare against the pre-rename blob so only real edits light up.
+// Binary diffs (no text hunks) light up every current line.
 // Missing git, a path outside any work tree, or an unknown ref return a
 // typed error (ErrNotRepo / ErrBadRef) with an empty set.
 func ChangedLines(file, ref string) (map[int]bool, error) {
@@ -48,30 +50,96 @@ func ChangedLines(file, ref string) (map[int]bool, error) {
 		return map[int]bool{}, fmt.Errorf("%w %q", ErrBadRef, ref)
 	}
 
-	cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", ref, "--", rel)
-	out, err := cmd.Output()
+	// Renames: compare against the pre-rename blob first, otherwise git
+	// reports the new path as a pure add and every line looks changed.
+	if !fileExistedAt(root, ref, rel) {
+		if old := renameSource(root, ref, rel); old != "" {
+			out, err := runDiff(root, ref, rel, old)
+			if err == nil || isDiffExit(err) {
+				return linesFromDiff(string(out), abs), nil
+			}
+		}
+	}
+
+	cmdOut, err := runDiff(root, ref, rel, "")
 	if err != nil {
-		// `git diff --exit-code` (or diff.exitCode) returns 1 when there
-		// are differences; stdout is still the patch. Other non-zero codes
-		// are real failures — still try the new-file fallback below.
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
-			return parseHunkLines(string(out)), nil
+		if isDiffExit(err) {
+			return linesFromDiff(string(cmdOut), abs), nil
 		}
 		if fileExistedAt(root, ref, rel) {
 			return map[int]bool{}, nil
 		}
 		return allFileLines(abs), nil
 	}
-	if len(bytes.TrimSpace(out)) > 0 {
-		return parseHunkLines(string(out)), nil
+	if len(bytes.TrimSpace(cmdOut)) > 0 {
+		return linesFromDiff(string(cmdOut), abs), nil
 	}
 
-	// Empty patch: either unchanged, or the file did not exist at ref
-	// (new / untracked). The latter should light up the whole file.
 	if fileExistedAt(root, ref, rel) {
 		return map[int]bool{}, nil
 	}
 	return allFileLines(abs), nil
+}
+
+func isDiffExit(err error) bool {
+	ee, ok := err.(*exec.ExitError)
+	return ok && ee.ExitCode() == 1
+}
+
+func runDiff(root, ref, rel, oldRel string) ([]byte, error) {
+	if oldRel != "" {
+		cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", ref+":"+oldRel, rel)
+		return cmd.Output()
+	}
+	cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", ref, "--", rel)
+	return cmd.Output()
+}
+
+func linesFromDiff(diff, abs string) map[int]bool {
+	if isBinaryDiff(diff) {
+		return allFileLines(abs)
+	}
+	changed := parseHunkLines(diff)
+	if len(changed) == 0 && strings.Contains(diff, "diff --git") {
+		// Textless change (mode-only / binary without the usual banner).
+		return allFileLines(abs)
+	}
+	return changed
+}
+
+func isBinaryDiff(diff string) bool {
+	return strings.Contains(diff, "Binary files ") ||
+		strings.Contains(diff, "GIT binary patch")
+}
+
+func renameSource(root, ref, rel string) string {
+	cmd := gitCommand(root, "diff", "--no-color", "--name-status", "-M", "-z", ref, "--")
+	out, err := cmd.Output()
+	if err != nil && !isDiffExit(err) {
+		return ""
+	}
+	parts := strings.Split(string(out), "\x00")
+	for i := 0; i < len(parts); {
+		status := strings.TrimSpace(parts[i])
+		if status == "" {
+			i++
+			continue
+		}
+		if status[0] == 'R' || status[0] == 'C' {
+			if i+2 >= len(parts) {
+				break
+			}
+			oldPath := filepath.ToSlash(parts[i+1])
+			newPath := filepath.ToSlash(parts[i+2])
+			if newPath == rel {
+				return oldPath
+			}
+			i += 3
+			continue
+		}
+		i += 2
+	}
+	return ""
 }
 
 // GitRoot returns the work tree root that contains dir, or "" if dir is
@@ -100,12 +168,14 @@ func EnsureRef(dir, ref string) error {
 
 // PathChange is one path git reports as different from ref.
 type PathChange struct {
-	Path   string // relative to the directory passed to ChangedPaths
-	Status string // A, M, D (untracked files are A)
+	Path    string // relative to the directory passed to ChangedPaths
+	OldPath string // set for renames (R) / copies (C)
+	Status  string // A, M, D, R, C (untracked files are A)
 }
 
-// ChangedPaths lists files that differ from ref under dir, including
-// deletions and untracked files. Paths are slash-separated and relative to dir.
+// ChangedPaths lists documentation files that differ from ref under dir,
+// including deletions, renames, and untracked files. Paths are slash-
+// separated and relative to dir. Non-doc paths are omitted.
 func ChangedPaths(dir, ref string) ([]PathChange, error) {
 	if err := EnsureRef(dir, ref); err != nil {
 		return nil, err
@@ -119,7 +189,7 @@ func ChangedPaths(dir, ref string) ([]PathChange, error) {
 	if !ok || spec == "" {
 		spec = "."
 	}
-	cmd := gitCommand(root, "diff", "--no-color", "--name-status", "--no-renames", "-z", ref, "--", spec)
+	cmd := gitCommand(root, "diff", "--no-color", "--name-status", "-M", "-z", ref, "--", spec)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
@@ -133,6 +203,9 @@ func ChangedPaths(dir, ref string) ([]PathChange, error) {
 	seen := map[string]bool{}
 	for _, c := range changes {
 		seen[c.Path] = true
+		if c.OldPath != "" {
+			seen[c.OldPath] = true
+		}
 	}
 
 	ls := gitCommand(abs, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
@@ -143,10 +216,7 @@ func ChangedPaths(dir, ref string) ([]PathChange, error) {
 				continue
 			}
 			rel = filepath.ToSlash(rel)
-			if seen[rel] {
-				continue
-			}
-			if !isDocPath(rel) {
+			if seen[rel] || !isDocPath(rel) {
 				continue
 			}
 			changes = append(changes, PathChange{Path: rel, Status: "A"})
@@ -154,6 +224,11 @@ func ChangedPaths(dir, ref string) ([]PathChange, error) {
 		}
 	}
 	return changes, nil
+}
+
+// IsDocPath reports whether path looks like a documentation file docmap walks.
+func IsDocPath(rel string) bool {
+	return isDocPath(rel)
 }
 
 func isDocPath(rel string) bool {
@@ -167,22 +242,49 @@ func isDocPath(rel string) bool {
 func parseNameStatus(raw, root, abs string) []PathChange {
 	parts := strings.Split(raw, "\x00")
 	var out []PathChange
-	for i := 0; i+1 < len(parts); i += 2 {
+	for i := 0; i < len(parts); {
 		status := strings.TrimSpace(parts[i])
-		path := parts[i+1]
-		if status == "" || path == "" {
+		if status == "" {
+			i++
 			continue
 		}
-		full := canonicalPath(filepath.Join(root, filepath.FromSlash(path)))
-		rel, err := filepath.Rel(abs, full)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
-			continue
-		}
-		rel = filepath.ToSlash(rel)
 		code := status[:1]
+		if code == "R" || code == "C" {
+			if i+2 >= len(parts) {
+				break
+			}
+			oldRel, _ := relUnder(root, abs, parts[i+1])
+			newRel, okNew := relUnder(root, abs, parts[i+2])
+			i += 3
+			if !okNew {
+				continue
+			}
+			if !isDocPath(newRel) && (oldRel == "" || !isDocPath(oldRel)) {
+				continue
+			}
+			out = append(out, PathChange{Path: newRel, OldPath: oldRel, Status: code})
+			continue
+		}
+		if i+1 >= len(parts) {
+			break
+		}
+		rel, ok := relUnder(root, abs, parts[i+1])
+		i += 2
+		if !ok || !isDocPath(rel) {
+			continue
+		}
 		out = append(out, PathChange{Path: rel, Status: code})
 	}
 	return out
+}
+
+func relUnder(root, abs, path string) (string, bool) {
+	full := canonicalPath(filepath.Join(root, filepath.FromSlash(path)))
+	rel, err := filepath.Rel(abs, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 // RecentFiles returns up to `limit` unique paths changed in recent commits

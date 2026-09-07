@@ -40,6 +40,7 @@ type JSONOutput struct {
 type JSONDocument struct {
 	Filename     string        `json:"filename"`
 	Change       string        `json:"change,omitempty"`
+	OldPath      string        `json:"old_path,omitempty"`
 	ChangedLines []int         `json:"changed_lines,omitempty"`
 	Tokens       int           `json:"tokens"`
 	Summary      JSONSummary   `json:"summary"`
@@ -202,10 +203,12 @@ func main() {
 				i++
 			}
 		case "--since":
-			if i+1 < len(os.Args) {
-				sinceRef = os.Args[i+1]
-				i++
+			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
+				fmt.Fprintln(os.Stderr, "Error: --since requires a git ref")
+				os.Exit(1)
 			}
+			sinceRef = os.Args[i+1]
+			i++
 		case "--refs", "-r":
 			showRefs = true
 		case "--json", "-j":
@@ -559,6 +562,7 @@ func outputChangedSince(docs []*parser.Document, root, ref string) {
 		os.Exit(1)
 	}
 	shown := 0
+	seen := map[string]bool{}
 	for _, doc := range docs {
 		path := filepath.Join(root, doc.Filename)
 		changed, err := parser.ChangedLines(path, ref)
@@ -570,10 +574,18 @@ func outputChangedSince(docs []*parser.Document, root, ref string) {
 			continue
 		}
 		render.ChangedSince(doc, changed, ref)
+		seen[filepath.ToSlash(doc.Filename)] = true
 		shown++
 	}
 	for _, c := range deletedDocPaths(root, ref) {
 		fmt.Printf("deleted: %s\n", c)
+		shown++
+	}
+	for _, c := range renamedDocPaths(root, ref) {
+		if seen[c.Path] {
+			continue
+		}
+		fmt.Printf("renamed: %s → %s\n", c.OldPath, c.Path)
 		shown++
 	}
 	if shown == 0 {
@@ -596,18 +608,51 @@ func deletedDocPaths(root, ref string) []string {
 	return out
 }
 
+func renamedDocPaths(root, ref string) []parser.PathChange {
+	changes, err := parser.ChangedPaths(root, ref)
+	if err != nil {
+		return nil
+	}
+	var out []parser.PathChange
+	for _, c := range changes {
+		if (c.Status == "R" || c.Status == "C") && c.OldPath != "" {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out
+}
+
+func changeStatusByPath(root, ref string) map[string]parser.PathChange {
+	changes, err := parser.ChangedPaths(root, ref)
+	if err != nil {
+		return nil
+	}
+	out := map[string]parser.PathChange{}
+	for _, c := range changes {
+		out[c.Path] = c
+	}
+	return out
+}
+
 func mentionPathsFromGit(root, ref string) []string {
 	changes, err := parser.ChangedPaths(root, ref)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	seen := map[string]bool{}
 	var out []string
-	for _, c := range changes {
-		if c.Status == "D" {
-			continue
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
 		}
-		out = append(out, c.Path)
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, c := range changes {
+		add(c.Path)
+		add(c.OldPath)
 	}
 	return out
 }
@@ -936,10 +981,12 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+	status := changeStatusByPath(root, ref)
 	output := JSONOutput{
 		Root:  absRoot,
 		Since: ref,
 	}
+	seen := map[string]bool{}
 	for _, doc := range docs {
 		path := filepath.Join(root, doc.Filename)
 		changed, err := parser.ChangedLines(path, ref)
@@ -947,9 +994,16 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 			continue
 		}
 		lines := sortedChangedLines(changed)
+		ch := "M"
+		oldPath := ""
+		if pc, ok := status[filepath.ToSlash(doc.Filename)]; ok {
+			ch = pc.Status
+			oldPath = pc.OldPath
+		}
 		jsonDoc := JSONDocument{
 			Filename:     doc.Filename,
-			Change:       "M",
+			Change:       ch,
+			OldPath:      oldPath,
 			ChangedLines: lines,
 			Tokens:       doc.TotalTokens,
 			Summary:      convertSummary(doc.Summary()),
@@ -958,11 +1012,22 @@ func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
 		}
 		output.Documents = append(output.Documents, jsonDoc)
 		output.TotalTokens += doc.TotalTokens
+		seen[filepath.ToSlash(doc.Filename)] = true
 	}
 	for _, name := range deletedDocPaths(root, ref) {
 		output.Documents = append(output.Documents, JSONDocument{
 			Filename: name,
 			Change:   "D",
+		})
+	}
+	for _, c := range renamedDocPaths(root, ref) {
+		if seen[c.Path] {
+			continue
+		}
+		output.Documents = append(output.Documents, JSONDocument{
+			Filename: c.Path,
+			OldPath:  c.OldPath,
+			Change:   c.Status,
 		})
 	}
 	output.TotalDocs = len(output.Documents)
