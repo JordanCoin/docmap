@@ -218,7 +218,7 @@ docmap > PDF Support (231)
   code L136-145  lang=(none)
 ```
 
-Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed, and lists `deleted:` paths for docs that existed at the ref. Combine with `--json` to get `changed_lines` and `"change": "D"` entries instead of the full tree. `docmap . --mentions --since HEAD` uses git's changed paths as the mention needles.
+Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed, lists `deleted:` / `renamed:` for docs that moved since the ref, and ignores non-doc paths. Binary docs (e.g. PDFs) light up as fully changed. Combine with `--json` to get `changed_lines`, `change` (`A`/`M`/`D`/`R`), and `old_path` for renames. `docmap . --mentions --since HEAD` uses git's changed paths (including deletes) as the mention needles.
 
 ### PDF support
 

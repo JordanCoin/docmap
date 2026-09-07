@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +210,88 @@ func TestEnsureRef(t *testing.T) {
 	}
 	if err := EnsureRef(repo, "nope"); !errors.Is(err, ErrBadRef) {
 		t.Fatalf("expected ErrBadRef, got %v", err)
+	}
+}
+
+func TestChangedPathsRename(t *testing.T) {
+	repo, guide := initGitDocRepo(t)
+	dest := filepath.Join(repo, "docs", "renamed.md")
+	runGit(t, repo, "mv", guide, dest)
+	write(t, dest, "# Guide\n\n## Intro\n\nstart\nedited\n")
+	runGit(t, repo, "add", "-A")
+
+	changes, err := ChangedPaths(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, c := range changes {
+		if c.Status == "R" && c.Path == "docs/renamed.md" && c.OldPath == "docs/guide.md" {
+			found = true
+		}
+		if c.Status == "D" && c.Path == "docs/guide.md" {
+			t.Fatalf("rename should not appear as delete, got %+v", changes)
+		}
+	}
+	if !found {
+		t.Fatalf("expected rename R docs/guide.md -> docs/renamed.md, got %+v", changes)
+	}
+
+	got, err := ChangedLines(dest, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("rename with edit should report changed lines")
+	}
+	if len(got) > 3 {
+		t.Fatalf("rename should not mark whole file when only a line was added, got %v", got)
+	}
+}
+
+func TestChangedPathsIgnoresNonDocs(t *testing.T) {
+	repo, _ := initGitDocRepo(t)
+	write(t, filepath.Join(repo, "main.go"), "package main\n")
+	runGit(t, repo, "add", "main.go")
+	gitCommit(t, repo, "code")
+	if err := os.Remove(filepath.Join(repo, "main.go")); err != nil {
+		t.Fatal(err)
+	}
+	changes, err := ChangedPaths(repo, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range changes {
+		if strings.HasSuffix(c.Path, ".go") {
+			t.Fatalf("non-doc delete leaked: %+v", changes)
+		}
+	}
+}
+
+func TestChangedLinesBinary(t *testing.T) {
+	repo, _ := initGitDocRepo(t)
+	pdf := filepath.Join(repo, "docs", "x.pdf")
+	if err := os.WriteFile(pdf, []byte{0x00, 0x01, 0x02}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "docs/x.pdf")
+	gitCommit(t, repo, "pdf")
+	if err := os.WriteFile(pdf, []byte{0x00, 0x01, 0x03, 0x04}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ChangedLines(pdf, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) == 0 {
+		t.Fatal("binary change should mark lines")
+	}
+}
+
+func TestParseHunkLinesBinaryBanner(t *testing.T) {
+	diff := "diff --git a/x.pdf b/x.pdf\nBinary files a/x.pdf and b/x.pdf differ\n"
+	if !isBinaryDiff(diff) {
+		t.Fatal("expected binary detection")
 	}
 }
 
