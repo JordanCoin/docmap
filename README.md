@@ -111,9 +111,22 @@ docmap file.md --at 154             # What's at line 154?
 docmap file.md --since HEAD~5       # Constructs on lines changed since a git ref
 
 docmap file.md --search "auth"      # Search titles, content, and notables
+docmap dirA dirB --search "auth" --compact  # Search multiple roots
+docmap docs/ --terms-file queries.txt --compact # One query per line
 docmap . --refs                     # Cross-references between docs
 docmap file.md --json               # Full typed AST as JSON
 ```
+
+Multiple roots are supported for search only. File paths in search results are
+relative to the root they came from, so duplicate names from different roots
+are retained as separate hits even when their displayed paths are identical.
+When both `--search` and `--terms-file` are supplied, the
+explicit search query runs first, followed by terms in file order; blank lines
+and lines beginning with `#` are ignored.
+
+Use `--compact` for one `file > section` line per hit (with `## term` headings
+when multiple queries run). Add `--json` to get an array such as
+`[{"term":"auth","file":"api.md","section":"Authentication","tokens":42}]`.
 
 ## Output
 

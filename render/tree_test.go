@@ -1,10 +1,81 @@
 package render
 
 import (
+	"github.com/mattn/go-runewidth"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/JordanCoin/docmap/parser"
 )
+
+func TestBoxLineWidths(t *testing.T) {
+	t.Setenv("COLUMNS", "80")
+	tests := []struct {
+		name, title string
+		min, want   int
+	}{
+		{"short", "x", 20, 20},
+		{"exact", strings.Repeat("x", 18), 20, 20},
+		{"wide", strings.Repeat("x", 100), 20, 78},
+		{"empty", "", 20, 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			line, width := boxLine(tt.title, tt.min)
+			if width != tt.want {
+				t.Fatalf("width = %d, want %d", width, tt.want)
+			}
+			if tt.name == "wide" && !strings.Contains(line, "…") {
+				t.Fatalf("wide title lacks ellipsis: %q", line)
+			}
+			if strings.Contains(line, "\x00") {
+				t.Fatal("invalid border")
+			}
+		})
+	}
+}
+
+func TestBoxLineTinyTerminal(t *testing.T) {
+	t.Setenv("COLUMNS", "3")
+	if line, width := boxLine("long title", 60); width != 1 || runewidth.StringWidth(line) != 3 {
+		t.Fatalf("line=%q width = %d, want inner 1", line, width)
+	}
+}
+
+func TestLongTitlesAllHeaderRenderers(t *testing.T) {
+	t.Setenv("COLUMNS", "40")
+	doc := parser.Parse("# Section\n[Other](other.md)\nhello")
+	doc.Filename = strings.Repeat("目录", 60)
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	printHeader(doc)
+	printMiniHeader(doc.Filename, "info")
+	MultiTree([]*parser.Document{doc}, doc.Filename)
+	RefsTree([]*parser.Document{doc}, doc.Filename)
+	w.Close()
+	os.Stdout = old
+	data, _ := io.ReadAll(r)
+	if len(data) == 0 {
+		t.Fatal("expected header output")
+	}
+	lines := strings.Split(string(data), "\n")
+	tops := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "╭") {
+			tops++
+			if runewidth.StringWidth(line) > 40 {
+				t.Fatalf("header too wide: %q", line)
+			}
+		}
+	}
+	if tops != 4 {
+		t.Fatalf("top borders = %d, want 4", tops)
+	}
+	r.Close()
+}
 
 func TestFormatTokens(t *testing.T) {
 	tests := []struct {
