@@ -31,18 +31,21 @@ type ManifestFile struct {
 // JSON output structures
 type JSONOutput struct {
 	Root        string         `json:"root"`
+	Since       string         `json:"since,omitempty"`
 	TotalTokens int            `json:"total_tokens"`
 	TotalDocs   int            `json:"total_docs"`
 	Documents   []JSONDocument `json:"documents"`
 }
 
 type JSONDocument struct {
-	Filename   string        `json:"filename"`
-	Tokens     int           `json:"tokens"`
-	Summary    JSONSummary   `json:"summary"`
-	Sections   []JSONSection `json:"sections"`
-	Nodes      []JSONNode    `json:"nodes,omitempty"`
-	References []JSONRef     `json:"references,omitempty"`
+	Filename     string        `json:"filename"`
+	Change       string        `json:"change,omitempty"`
+	ChangedLines []int         `json:"changed_lines,omitempty"`
+	Tokens       int           `json:"tokens"`
+	Summary      JSONSummary   `json:"summary"`
+	Sections     []JSONSection `json:"sections"`
+	Nodes        []JSONNode    `json:"nodes,omitempty"`
+	References   []JSONRef     `json:"references,omitempty"`
 }
 
 // JSONSummary mirrors parser.ContentSummary for JSON consumers.
@@ -147,6 +150,7 @@ func main() {
 	var compact bool
 	var brief bool
 	var mentionPaths []string
+	var mentionsFlag bool
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -215,14 +219,8 @@ func main() {
 		case "--brief":
 			brief = true
 		case "--mentions":
-			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
-				if stdinIsPipe() {
-					mentionPaths = append(mentionPaths, readMentionLines(os.Stdin)...)
-				} else {
-					fmt.Fprintln(os.Stderr, "Error: --mentions requires a path (or piped git diff --name-only)")
-					os.Exit(1)
-				}
-			} else {
+			mentionsFlag = true
+			if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "--") {
 				mentionPaths = append(mentionPaths, splitMentionArg(os.Args[i+1])...)
 				i++
 			}
@@ -235,6 +233,15 @@ func main() {
 	}
 	if compact && searchQuery == "" && termsFile == "" {
 		fmt.Fprintln(os.Stderr, "Error: --compact requires --search or --terms-file")
+		os.Exit(1)
+	}
+	if mentionsFlag && len(mentionPaths) == 0 && sinceRef == "" {
+		if stdinIsPipe() {
+			mentionPaths = append(mentionPaths, readMentionLines(os.Stdin)...)
+		}
+	}
+	if mentionsFlag && len(mentionPaths) == 0 && sinceRef == "" {
+		fmt.Fprintln(os.Stderr, "Error: --mentions requires a path, piped names, or --since <ref>")
 		os.Exit(1)
 	}
 	terms, err := readTerms(searchQuery, termsFile)
@@ -335,6 +342,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if mentionsFlag && len(mentionPaths) == 0 && sinceRef != "" {
+		mentionPaths = mentionPathsFromGit(target, sinceRef)
+		if len(mentionPaths) == 0 {
+			fmt.Println("No changed documentation paths since " + sinceRef)
+			return
+		}
+	}
+
 	if info.IsDir() {
 		// Multi-file mode: find all .md files
 		docs := parseDirectoryOpts(target, walkAll)
@@ -344,12 +359,15 @@ func main() {
 		}
 		if len(terms) > 0 {
 			outputSearch(docs, terms, jsonMode, compact)
+		} else if sinceRef != "" && jsonMode {
+			absPath, _ := filepath.Abs(target)
+			outputJSONSince(docs, absPath, target, sinceRef)
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
 		} else if brief {
 			outputBrief(docs, target)
-		} else if len(mentionPaths) > 0 {
+		} else if mentionsFlag {
 			outputMentions(docs, mentionPaths)
 		} else if sinceRef != "" {
 			outputChangedSince(docs, target, sinceRef)
@@ -373,15 +391,22 @@ func main() {
 
 		if len(terms) > 0 {
 			outputSearch([]*parser.Document{doc}, terms, jsonMode, compact)
+		} else if sinceRef != "" && jsonMode {
+			absPath, _ := filepath.Abs(target)
+			outputJSONSince([]*parser.Document{doc}, absPath, filepath.Dir(target), sinceRef)
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
 		} else if brief {
 			outputBrief([]*parser.Document{doc}, filepath.Dir(target))
-		} else if len(mentionPaths) > 0 {
+		} else if mentionsFlag {
 			outputMentions([]*parser.Document{doc}, mentionPaths)
 		} else if sinceRef != "" {
-			changed, _ := parser.ChangedLines(target, sinceRef)
+			changed, err := parser.ChangedLines(target, sinceRef)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
 			render.ChangedSince(doc, changed, sinceRef)
 		} else if atLine > 0 && expandSection != "" {
 			render.ExpandAtLine(doc, atLine)
@@ -420,6 +445,9 @@ func gitTrackedSet(dir string) map[string]bool {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil
+	}
+	if eval, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
+		abs = eval
 	}
 	inside, err := exec.Command("git", "-C", abs, "rev-parse", "--is-inside-work-tree").Output()
 	if err != nil || strings.TrimSpace(string(inside)) != "true" {
@@ -526,19 +554,62 @@ func parseDirectoryOpts(dir string, all bool) []*parser.Document {
 }
 
 func outputChangedSince(docs []*parser.Document, root, ref string) {
+	if err := parser.EnsureRef(root, ref); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	shown := 0
 	for _, doc := range docs {
 		path := filepath.Join(root, doc.Filename)
-		changed, _ := parser.ChangedLines(path, ref)
+		changed, err := parser.ChangedLines(path, ref)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "docmap: %s: %v\n", doc.Filename, err)
+			continue
+		}
 		if len(changed) == 0 {
 			continue
 		}
 		render.ChangedSince(doc, changed, ref)
 		shown++
 	}
+	for _, c := range deletedDocPaths(root, ref) {
+		fmt.Printf("deleted: %s\n", c)
+		shown++
+	}
 	if shown == 0 {
 		render.ChangedSince(&parser.Document{Filename: root}, map[int]bool{}, ref)
 	}
+}
+
+func deletedDocPaths(root, ref string) []string {
+	changes, err := parser.ChangedPaths(root, ref)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range changes {
+		if c.Status == "D" {
+			out = append(out, c.Path)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func mentionPathsFromGit(root, ref string) []string {
+	changes, err := parser.ChangedPaths(root, ref)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	var out []string
+	for _, c := range changes {
+		if c.Status == "D" {
+			continue
+		}
+		out = append(out, c.Path)
+	}
+	return out
 }
 
 func outputBrief(docs []*parser.Document, root string) {
@@ -860,6 +931,106 @@ func outputJSON(docs []*parser.Document, root string) {
 	json.NewEncoder(os.Stdout).Encode(output)
 }
 
+func outputJSONSince(docs []*parser.Document, absRoot, root, ref string) {
+	if err := parser.EnsureRef(root, ref); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	output := JSONOutput{
+		Root:  absRoot,
+		Since: ref,
+	}
+	for _, doc := range docs {
+		path := filepath.Join(root, doc.Filename)
+		changed, err := parser.ChangedLines(path, ref)
+		if err != nil || len(changed) == 0 {
+			continue
+		}
+		lines := sortedChangedLines(changed)
+		jsonDoc := JSONDocument{
+			Filename:     doc.Filename,
+			Change:       "M",
+			ChangedLines: lines,
+			Tokens:       doc.TotalTokens,
+			Summary:      convertSummary(doc.Summary()),
+			Sections:     convertSectionsSince(doc.Sections, changed),
+			Nodes:        convertNodesSince(doc.Nodes, changed),
+		}
+		output.Documents = append(output.Documents, jsonDoc)
+		output.TotalTokens += doc.TotalTokens
+	}
+	for _, name := range deletedDocPaths(root, ref) {
+		output.Documents = append(output.Documents, JSONDocument{
+			Filename: name,
+			Change:   "D",
+		})
+	}
+	output.TotalDocs = len(output.Documents)
+	if output.Documents == nil {
+		output.Documents = []JSONDocument{}
+	}
+	json.NewEncoder(os.Stdout).Encode(output)
+}
+
+func sortedChangedLines(changed map[int]bool) []int {
+	lines := make([]int, 0, len(changed))
+	for n := range changed {
+		lines = append(lines, n)
+	}
+	sort.Ints(lines)
+	return lines
+}
+
+func convertSectionsSince(sections []*parser.Section, changed map[int]bool) []JSONSection {
+	var result []JSONSection
+	for _, s := range sections {
+		kids := convertSectionsSince(s.Children, changed)
+		hit := false
+		for line := s.LineStart; line <= s.LineEnd; line++ {
+			if changed[line] {
+				hit = true
+				break
+			}
+		}
+		if !hit && len(kids) == 0 {
+			continue
+		}
+		js := JSONSection{
+			Level:     s.Level,
+			Title:     s.Title,
+			Tokens:    s.Tokens,
+			LineStart: s.LineStart,
+			LineEnd:   s.LineEnd,
+			KeyTerms:  s.KeyTerms,
+			Notables:  convertNodesSince(s.Notables, changed),
+			Children:  kids,
+		}
+		result = append(result, js)
+	}
+	return result
+}
+
+func convertNodesSince(nodes []parser.Node, changed map[int]bool) []JSONNode {
+	var out []JSONNode
+	for _, n := range nodes {
+		end := n.LineEnd()
+		if end < n.LineStart() {
+			end = n.LineStart()
+		}
+		hit := false
+		for line := n.LineStart(); line <= end; line++ {
+			if changed[line] {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			out = append(out, convertNode(n))
+		}
+	}
+	return out
+}
+
 func convertSummary(s parser.ContentSummary) JSONSummary {
 	return JSONSummary{
 		Callouts:     s.Callouts,
@@ -981,6 +1152,8 @@ Examples:
   docmap README.md --section "API"  # Filter to section
   docmap . --brief                   # Ten-line session start: counts + recent docs
   docmap . --mentions parser/git.go  # Sections that mention a changed path
+  docmap . --mentions --since HEAD   # Mentions of files git says changed
+  docmap . --since HEAD --json       # Changed docs as JSON (includes deletions)
   docmap README.md --expand "API"   # Show section content
   docmap README.md --at 154 --expand "API"  # Dump the section that contains line 154
   docmap . --refs                   # Show cross-references between docs
@@ -998,6 +1171,7 @@ Flags:
   -s, --section <name>   Filter to a specific section
   --brief                Session-start digest: file/section counts and recent docs
   --mentions <path>      Sections that mention a path (repeat or comma-list; stdin OK)
+                         With --since and no path, uses git's changed files
   -e, --expand <name>    Show full source of a section (file:L-L, including children)
   -t, --type <kind>      Drill into one construct: code, callout, table, math,
                          footnote, deflist, linkref, html, task, wiki, embed,
@@ -1007,6 +1181,7 @@ Flags:
   --at <line>            Show what construct lives at a specific line number
   --since <ref>          Show constructs on lines changed since a git ref
                          (runs git from the file's repo; works on a file or dir)
+                         Combine with --json for changed_lines + deleted files
   -r, --refs             Show cross-references between markdown files
   -j, --json             Output JSON format
   -v, --version          Print version

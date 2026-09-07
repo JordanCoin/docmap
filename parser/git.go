@@ -3,12 +3,21 @@ package parser
 import (
 	"bufio"
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+)
+
+var (
+	// ErrNotRepo is returned when the path is not inside a git work tree.
+	ErrNotRepo = errors.New("not a git repository")
+	// ErrBadRef is returned when --since names a ref git cannot resolve.
+	ErrBadRef = errors.New("unknown git ref")
 )
 
 // ChangedLines returns the set of line numbers in `file` that have been
@@ -22,22 +31,21 @@ import (
 // (and any other intermediate symlink) still maps onto git's pathspec.
 //
 // New files (untracked, or added after `ref`) are treated as fully changed.
-// If the file isn't in a git work tree, the ref doesn't exist, or git isn't
-// available, ChangedLines returns an empty set and a nil error — callers
-// should treat "nothing changed" as the fall-through behavior.
+// Missing git, a path outside any work tree, or an unknown ref return a
+// typed error (ErrNotRepo / ErrBadRef) with an empty set.
 func ChangedLines(file, ref string) (map[int]bool, error) {
 	abs := canonicalPath(file)
 	root := gitRoot(filepath.Dir(abs))
 	if root == "" {
-		return map[int]bool{}, nil
+		return map[int]bool{}, fmt.Errorf("%w", ErrNotRepo)
 	}
 	rel, ok := repoRelPath(root, abs)
 	if !ok {
-		return map[int]bool{}, nil
+		return map[int]bool{}, fmt.Errorf("%w", ErrNotRepo)
 	}
 
 	if !gitRevExists(root, ref) {
-		return map[int]bool{}, nil
+		return map[int]bool{}, fmt.Errorf("%w %q", ErrBadRef, ref)
 	}
 
 	cmd := gitCommand(root, "diff", "--no-color", "--no-ext-diff", "--unified=0", ref, "--", rel)
@@ -70,6 +78,111 @@ func ChangedLines(file, ref string) (map[int]bool, error) {
 // not inside a git repository.
 func GitRoot(dir string) string {
 	return gitRoot(dir)
+}
+
+// EnsureRef reports whether dir is in a git work tree and ref names a commit.
+func EnsureRef(dir, ref string) error {
+	abs := canonicalPath(dir)
+	root := gitRoot(abs)
+	if root == "" {
+		if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
+			root = gitRoot(filepath.Dir(abs))
+		}
+	}
+	if root == "" {
+		return fmt.Errorf("%w: %s", ErrNotRepo, dir)
+	}
+	if !gitRevExists(root, ref) {
+		return fmt.Errorf("%w %q", ErrBadRef, ref)
+	}
+	return nil
+}
+
+// PathChange is one path git reports as different from ref.
+type PathChange struct {
+	Path   string // relative to the directory passed to ChangedPaths
+	Status string // A, M, D (untracked files are A)
+}
+
+// ChangedPaths lists files that differ from ref under dir, including
+// deletions and untracked files. Paths are slash-separated and relative to dir.
+func ChangedPaths(dir, ref string) ([]PathChange, error) {
+	if err := EnsureRef(dir, ref); err != nil {
+		return nil, err
+	}
+	abs := canonicalPath(dir)
+	if fi, err := os.Stat(abs); err == nil && !fi.IsDir() {
+		abs = filepath.Dir(abs)
+	}
+	root := gitRoot(abs)
+	spec, ok := repoRelPath(root, abs)
+	if !ok || spec == "" {
+		spec = "."
+	}
+	cmd := gitCommand(root, "diff", "--no-color", "--name-status", "--no-renames", "-z", ref, "--", spec)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 {
+			if len(out) == 0 {
+				return nil, err
+			}
+		}
+	}
+	changes := parseNameStatus(string(out), root, abs)
+
+	seen := map[string]bool{}
+	for _, c := range changes {
+		seen[c.Path] = true
+	}
+
+	ls := gitCommand(abs, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
+	lsOut, lsErr := ls.Output()
+	if lsErr == nil {
+		for _, rel := range strings.Split(string(lsOut), "\x00") {
+			if rel == "" {
+				continue
+			}
+			rel = filepath.ToSlash(rel)
+			if seen[rel] {
+				continue
+			}
+			if !isDocPath(rel) {
+				continue
+			}
+			changes = append(changes, PathChange{Path: rel, Status: "A"})
+			seen[rel] = true
+		}
+	}
+	return changes, nil
+}
+
+func isDocPath(rel string) bool {
+	lower := strings.ToLower(rel)
+	return strings.HasSuffix(lower, ".md") ||
+		strings.HasSuffix(lower, ".pdf") ||
+		strings.HasSuffix(lower, ".yaml") ||
+		strings.HasSuffix(lower, ".yml")
+}
+
+func parseNameStatus(raw, root, abs string) []PathChange {
+	parts := strings.Split(raw, "\x00")
+	var out []PathChange
+	for i := 0; i+1 < len(parts); i += 2 {
+		status := strings.TrimSpace(parts[i])
+		path := parts[i+1]
+		if status == "" || path == "" {
+			continue
+		}
+		full := canonicalPath(filepath.Join(root, filepath.FromSlash(path)))
+		rel, err := filepath.Rel(abs, full)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, "../") {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		code := status[:1]
+		out = append(out, PathChange{Path: rel, Status: code})
+	}
+	return out
 }
 
 // RecentFiles returns up to `limit` unique paths changed in recent commits
