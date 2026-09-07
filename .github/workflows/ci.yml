@@ -126,5 +126,8 @@ jobs:
       - name: Test section filter
         run: ./docmap README.md --section "Install" || true
 
+      - name: Test --since git integration
+        run: ./docmap README.md --since HEAD
+
       - name: Test nonexistent path handling
         run: "! ./docmap /nonexistent/path"

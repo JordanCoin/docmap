@@ -18,6 +18,8 @@ docmap .                            # Directory inventory + per-file digest
 docmap README.md                    # Single file: dense tree with notables
 docmap README.md --section "API"    # Filter to one section
 docmap README.md --expand "API"     # Show raw content of a section
+docmap . --brief                    # Session-start digest
+docmap . --mentions path/to/file.go # Docs that mention a changed path
 ```
 
 ## Typed drill-downs
@@ -45,6 +47,7 @@ Other supported `--type` values: `deflist`, `embed`, `mention`, `issue`, `sha`, 
 ```bash
 docmap file.md --at 154                 # What construct is at line 154?
 docmap file.md --since HEAD~5           # Constructs on lines changed since git ref
+docmap . --since main                   # Same, across every doc in the tree
 ```
 
 `--at` is the reverse lookup — give it a line number from a grep hit, diff, or error, and it tells you the section breadcrumb and node type.

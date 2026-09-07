@@ -100,7 +100,9 @@ docmap report.pdf                   # PDF document structure
 docmap config.yaml                  # YAML file structure
 
 docmap README.md --section "API"    # Filter to section
-docmap README.md --expand "API"     # Show section content
+docmap README.md --expand "API"     # Raw section source with file:L-L
+docmap . --brief                    # Session start: counts + recently changed docs
+docmap . --mentions parser/git.go   # Sections that mention a changed path
 
 docmap file.md --type code          # List every code block
 docmap file.md --type code --lang python   # Only Python code blocks
@@ -214,7 +216,7 @@ docmap > PDF Support (231)
   code L136-145  lang=(none)
 ```
 
-Uses `git diff --unified=0` under the hood.
+Uses `git diff --unified=0` from the file's repository root, so it works even when your shell is not inside the repo. New files (untracked, or added after the ref) count as fully changed. Directory mode (`docmap . --since main`) prints only the docs that actually changed.
 
 ### PDF support
 

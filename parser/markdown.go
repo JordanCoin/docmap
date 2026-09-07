@@ -9,7 +9,7 @@ import (
 // GFM + Obsidian extensions) and derives the legacy Section tree and
 // cross-file Reference list from the resulting typed AST.
 func Parse(content string) *Document {
-	doc := &Document{}
+	doc := &Document{Source: content}
 	source := []byte(content)
 
 	// Build the typed AST first; everything below is derived from it.
@@ -241,6 +241,7 @@ func nodeRaw(n Node) string {
 // during the migration so existing callers keep working.
 type Document struct {
 	Filename    string
+	Source      string // original file text; used by --expand to dump real markdown
 	TotalTokens int
 	Sections    []*Section
 	References  []Reference // Links to other .md files
@@ -381,6 +382,25 @@ func extractKeyTerms(content string) []string {
 func (d *Document) GetSection(name string) *Section {
 	name = strings.ToLower(name)
 	return findSection(d.Sections, name)
+}
+
+// SourceSpan returns the original source for the inclusive 1-based line
+// range. Empty when Source was not captured (PDF) or the range is invalid.
+func (d *Document) SourceSpan(start, end int) string {
+	if d == nil || d.Source == "" {
+		return ""
+	}
+	lines := strings.Split(d.Source, "\n")
+	if start < 1 {
+		start = 1
+	}
+	if end < 1 || end > len(lines) {
+		end = len(lines)
+	}
+	if start > end {
+		return ""
+	}
+	return strings.Join(lines[start-1:end], "\n")
 }
 
 func findSection(sections []*Section, name string) *Section {
