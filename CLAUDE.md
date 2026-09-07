@@ -18,6 +18,8 @@ docmap .                            # Directory inventory + per-file digest
 docmap README.md                    # Single file: dense tree with notables
 docmap README.md --section "API"    # Filter to one section
 docmap README.md --expand "API"     # Show raw content of a section
+docmap . --brief                    # Session-start digest
+docmap . --mentions path/to/file.go # Docs that mention a changed path
 ```
 
 ## Typed drill-downs

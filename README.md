@@ -100,7 +100,9 @@ docmap report.pdf                   # PDF document structure
 docmap config.yaml                  # YAML file structure
 
 docmap README.md --section "API"    # Filter to section
-docmap README.md --expand "API"     # Show section content
+docmap README.md --expand "API"     # Raw section source with file:L-L
+docmap . --brief                    # Session start: counts + recently changed docs
+docmap . --mentions parser/git.go   # Sections that mention a changed path
 
 docmap file.md --type code          # List every code block
 docmap file.md --type code --lang python   # Only Python code blocks

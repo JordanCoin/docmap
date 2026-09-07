@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -190,4 +191,20 @@ Also check [external](https://example.com).
 		}
 	}
 	t.Error("expected api.md reference with anchor stripped")
+}
+
+func TestSourceSpan(t *testing.T) {
+	content := "# Title\n\n## Setup\n\nhello\nworld\n"
+	doc := Parse(content)
+	if doc.Source != content {
+		t.Fatalf("Source not stored")
+	}
+	setup := doc.GetSection("Setup")
+	if setup == nil {
+		t.Fatal("missing Setup")
+	}
+	got := doc.SourceSpan(setup.LineStart, setup.LineEnd)
+	if !strings.Contains(got, "## Setup") || !strings.Contains(got, "hello") {
+		t.Fatalf("span missing heading source, got %q", got)
+	}
 }

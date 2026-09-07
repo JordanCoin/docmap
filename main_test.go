@@ -99,3 +99,52 @@ func TestParseDirectoryHonorsGitignore(t *testing.T) {
 		t.Errorf("--all walk: got %d docs %v, want 4", len(all), all)
 	}
 }
+
+func TestOutputMentionsFindsPath(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "guide.md"), "# Guide\n\nSee `parser/git.go` when diffs break.\n")
+	writeFile(t, filepath.Join(dir, "other.md"), "# Other\n\nNo git path here.\n")
+	docs := parseDirectoryOpts(dir, true)
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	outputMentions(docs, []string{"parser/git.go"})
+	w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+	if !strings.Contains(out, "guide.md > Guide") {
+		t.Fatalf("expected mention hit, got %q", out)
+	}
+	if strings.Contains(out, "other.md") {
+		t.Fatalf("other.md should not match, got %q", out)
+	}
+}
+
+func TestOutputBriefCounts(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.md"), "# A\n\n## One\n\ntext\n")
+	writeFile(t, filepath.Join(dir, "b.md"), "# B\n\n## Two\n\ntext\n")
+	docs := parseDirectoryOpts(dir, true)
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	outputBrief(docs, dir)
+	w.Close()
+	os.Stdout = old
+	buf := make([]byte, 4096)
+	n, _ := r.Read(buf)
+	out := string(buf[:n])
+	if !strings.Contains(out, "2 files") || !strings.Contains(out, "2 md") {
+		t.Fatalf("brief counts, got %q", out)
+	}
+}

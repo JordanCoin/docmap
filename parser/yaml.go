@@ -9,7 +9,7 @@ import (
 
 // ParseYAML parses YAML content into a Document structure
 func ParseYAML(content string) (*Document, error) {
-	doc := &Document{}
+	doc := &Document{Source: content}
 
 	if strings.TrimSpace(content) == "" {
 		return doc, nil

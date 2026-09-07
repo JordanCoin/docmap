@@ -883,7 +883,7 @@ func ChangedSince(doc *parser.Document, changed map[int]bool, ref string) {
 			if sectionHasChangedLine(s, changed) {
 				h := hit{section: s}
 				for _, n := range s.Notables {
-					if changed[n.LineStart()] {
+					if nodeHasChangedLine(n, changed) {
 						h.notables = append(h.notables, n)
 					}
 				}
@@ -928,6 +928,19 @@ func ChangedSince(doc *parser.Document, changed map[int]bool, ref string) {
 	}
 }
 
+func nodeHasChangedLine(n parser.Node, changed map[int]bool) bool {
+	end := n.LineEnd()
+	if end < n.LineStart() {
+		end = n.LineStart()
+	}
+	for line := n.LineStart(); line <= end; line++ {
+		if changed[line] {
+			return true
+		}
+	}
+	return false
+}
+
 func sectionHasChangedLine(s *parser.Section, changed map[int]bool) bool {
 	for line := s.LineStart; line <= s.LineEnd; line++ {
 		if changed[line] {
@@ -966,30 +979,50 @@ func FilteredTree(doc *parser.Document, filter string) {
 	fmt.Println()
 }
 
-// ExpandSection shows full content of a section
+// ExpandSection prints the original markdown for a named section, including
+// nested headings, with a file:line-range locator agents can jump to.
 func ExpandSection(doc *parser.Document, name string) {
 	section := doc.GetSection(name)
 	if section == nil {
 		fmt.Printf("Section '%s' not found\n", name)
 		return
 	}
+	printSectionSource(doc, section)
+}
 
-	fmt.Printf("%s%s%s\n", bold+cyan, section.Title, reset)
-	fmt.Println(dim + strings.Repeat("─", 50) + reset)
-	fmt.Println()
-
-	// Print content (limited)
-	content := section.Content
-	lines := strings.Split(content, "\n")
-	maxLines := 50
-	if len(lines) > maxLines {
-		for _, line := range lines[:maxLines] {
-			fmt.Println(line)
-		}
-		fmt.Printf("\n%s... (%d more lines)%s\n", dim, len(lines)-maxLines, reset)
-	} else {
-		fmt.Println(content)
+func printSectionSource(doc *parser.Document, section *parser.Section) {
+	raw := doc.SourceSpan(section.LineStart, section.LineEnd)
+	if raw == "" {
+		raw = section.Content
 	}
+	fmt.Printf("%s:%d-%d  %s\n", doc.Filename, section.LineStart, section.LineEnd, section.Title)
+	fmt.Println(strings.Repeat("─", 50))
+	fmt.Println(raw)
+}
+
+// ExpandAtLine dumps the section that contains the given line.
+func ExpandAtLine(doc *parser.Document, line int) {
+	section := sectionAtLine(doc.Sections, line)
+	if section == nil {
+		fmt.Printf("No section contains line %d\n", line)
+		return
+	}
+	printSectionSource(doc, section)
+}
+
+func sectionAtLine(sections []*parser.Section, line int) *parser.Section {
+	var best *parser.Section
+	var walk func([]*parser.Section)
+	walk = func(ss []*parser.Section) {
+		for _, s := range ss {
+			if s.LineStart <= line && line <= s.LineEnd {
+				best = s
+				walk(s.Children)
+			}
+		}
+	}
+	walk(sections)
+	return best
 }
 
 // MultiTree renders multiple documents as a combined directory view with

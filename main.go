@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -144,6 +145,8 @@ func main() {
 	var targets []string
 	var termsFile string
 	var compact bool
+	var brief bool
+	var mentionPaths []string
 
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
@@ -209,6 +212,20 @@ func main() {
 			compact = true
 		case "--all":
 			walkAll = true
+		case "--brief":
+			brief = true
+		case "--mentions":
+			if i+1 >= len(os.Args) || strings.HasPrefix(os.Args[i+1], "--") {
+				if stdinIsPipe() {
+					mentionPaths = append(mentionPaths, readMentionLines(os.Stdin)...)
+				} else {
+					fmt.Fprintln(os.Stderr, "Error: --mentions requires a path (or piped git diff --name-only)")
+					os.Exit(1)
+				}
+			} else {
+				mentionPaths = append(mentionPaths, splitMentionArg(os.Args[i+1])...)
+				i++
+			}
 		default:
 			targets = append(targets, os.Args[i])
 		}
@@ -330,8 +347,16 @@ func main() {
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON(docs, absPath)
+		} else if brief {
+			outputBrief(docs, target)
+		} else if len(mentionPaths) > 0 {
+			outputMentions(docs, mentionPaths)
 		} else if sinceRef != "" {
 			outputChangedSince(docs, target, sinceRef)
+		} else if expandSection != "" {
+			outputExpand(docs, expandSection)
+		} else if sectionFilter != "" {
+			outputSection(docs, sectionFilter)
 		} else if showRefs {
 			render.RefsTree(docs, target)
 		} else {
@@ -351,9 +376,15 @@ func main() {
 		} else if jsonMode {
 			absPath, _ := filepath.Abs(target)
 			outputJSON([]*parser.Document{doc}, absPath)
+		} else if brief {
+			outputBrief([]*parser.Document{doc}, filepath.Dir(target))
+		} else if len(mentionPaths) > 0 {
+			outputMentions([]*parser.Document{doc}, mentionPaths)
 		} else if sinceRef != "" {
 			changed, _ := parser.ChangedLines(target, sinceRef)
 			render.ChangedSince(doc, changed, sinceRef)
+		} else if atLine > 0 && expandSection != "" {
+			render.ExpandAtLine(doc, atLine)
 		} else if atLine > 0 {
 			render.AtLine(doc, atLine)
 		} else if typeFilter != "" {
@@ -508,6 +539,197 @@ func outputChangedSince(docs []*parser.Document, root, ref string) {
 	if shown == 0 {
 		render.ChangedSince(&parser.Document{Filename: root}, map[int]bool{}, ref)
 	}
+}
+
+func outputBrief(docs []*parser.Document, root string) {
+	totalSections := 0
+	totalTokens := 0
+	md := 0
+	for _, d := range docs {
+		totalTokens += d.TotalTokens
+		totalSections += len(d.GetAllSections())
+		if strings.HasSuffix(strings.ToLower(d.Filename), ".md") {
+			md++
+		}
+	}
+	fmt.Printf("%d files (%d md) · %d sections · ~%s tokens\n",
+		len(docs), md, totalSections, briefTokens(totalTokens))
+
+	recent := parser.RecentFiles(root, 5)
+	if len(recent) == 0 {
+		recent = recentByMtime(docs, root, 5)
+	}
+	if len(recent) > 0 {
+		fmt.Printf("recent: %s\n", strings.Join(recent, ", "))
+	}
+}
+
+func briefTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000.0)
+	}
+	return strconv.Itoa(n)
+}
+
+func recentByMtime(docs []*parser.Document, root string, limit int) []string {
+	type rec struct {
+		name string
+		mod  int64
+	}
+	var rows []rec
+	for _, d := range docs {
+		info, err := os.Stat(filepath.Join(root, d.Filename))
+		if err != nil {
+			continue
+		}
+		rows = append(rows, rec{d.Filename, info.ModTime().UnixNano()})
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].mod > rows[j].mod })
+	if len(rows) > limit {
+		rows = rows[:limit]
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.name
+	}
+	return out
+}
+
+func outputMentions(docs []*parser.Document, paths []string) {
+	seen := map[string]bool{}
+	for _, p := range paths {
+		needles := mentionNeedles(p)
+		if len(needles) == 0 {
+			continue
+		}
+		for _, doc := range docs {
+			if mentionIsSelf(doc.Filename, p) {
+				continue
+			}
+			for _, sec := range doc.GetAllSections() {
+				if !sectionMentions(doc, sec, needles) {
+					continue
+				}
+				line := doc.Filename + " > " + sec.Title
+				if seen[line] {
+					continue
+				}
+				seen[line] = true
+				fmt.Println(line)
+			}
+		}
+	}
+	if len(seen) == 0 {
+		fmt.Println("No sections mention those paths")
+	}
+}
+
+func mentionIsSelf(filename, changed string) bool {
+	return strings.EqualFold(filepath.ToSlash(filename), filepath.ToSlash(changed)) ||
+		strings.EqualFold(filepath.Base(filename), filepath.Base(changed))
+}
+
+func mentionNeedles(p string) []string {
+	p = filepath.ToSlash(strings.TrimSpace(p))
+	if p == "" {
+		return nil
+	}
+	var out []string
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if len(s) < 3 {
+			return
+		}
+		for _, e := range out {
+			if e == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	add(p)
+	add(filepath.Base(p))
+	return out
+}
+
+func sectionMentions(doc *parser.Document, sec *parser.Section, needles []string) bool {
+	blob := strings.ToLower(sec.Title + "\n" + sec.Content)
+	for _, n := range needles {
+		if strings.Contains(blob, n) {
+			return true
+		}
+	}
+	for _, ref := range doc.References {
+		if ref.Line < sec.LineStart || ref.Line > sec.LineEnd {
+			continue
+		}
+		tgt := strings.ToLower(filepath.ToSlash(ref.Target))
+		for _, n := range needles {
+			if strings.Contains(tgt, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func outputExpand(docs []*parser.Document, name string) {
+	found := false
+	for _, doc := range docs {
+		if doc.GetSection(name) == nil {
+			continue
+		}
+		render.ExpandSection(doc, name)
+		found = true
+	}
+	if !found {
+		fmt.Printf("Section '%s' not found\n", name)
+	}
+}
+
+func outputSection(docs []*parser.Document, name string) {
+	found := false
+	for _, doc := range docs {
+		if doc.GetSection(name) == nil {
+			continue
+		}
+		render.FilteredTree(doc, name)
+		found = true
+	}
+	if !found {
+		fmt.Printf("Section '%s' not found\n", name)
+	}
+}
+
+func splitMentionArg(arg string) []string {
+	var out []string
+	for _, p := range strings.Split(arg, ",") {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func readMentionLines(r io.Reader) []string {
+	var out []string
+	s := bufio.NewScanner(r)
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line != "" && !strings.HasPrefix(line, "#") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func stdinIsPipe() bool {
+	st, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return st.Mode()&os.ModeCharDevice == 0
 }
 
 func parsePath(path string, all bool) ([]*parser.Document, error) {
@@ -757,7 +979,10 @@ Examples:
   docmap config.yaml                # Single YAML file structure
   docmap docs/                      # Specific folder
   docmap README.md --section "API"  # Filter to section
+  docmap . --brief                   # Ten-line session start: counts + recent docs
+  docmap . --mentions parser/git.go  # Sections that mention a changed path
   docmap README.md --expand "API"   # Show section content
+  docmap README.md --at 154 --expand "API"  # Dump the section that contains line 154
   docmap . --refs                   # Show cross-references between docs
   docmap docs/ --search "auth"     # Search across all files
   docmap dirA dirB --search "auth" --compact # Search multiple roots
@@ -771,7 +996,9 @@ Flags:
   --terms-file <path>     Run one search query per non-comment, non-blank line
   --compact               Search output as one "file > section" line per hit
   -s, --section <name>   Filter to a specific section
-  -e, --expand <name>    Show full content of a section
+  --brief                Session-start digest: file/section counts and recent docs
+  --mentions <path>      Sections that mention a path (repeat or comma-list; stdin OK)
+  -e, --expand <name>    Show full source of a section (file:L-L, including children)
   -t, --type <kind>      Drill into one construct: code, callout, table, math,
                          footnote, deflist, linkref, html, task, wiki, embed,
                          mention, issue, sha, emoji

@@ -91,7 +91,9 @@ Searches section titles and content *plus* the typed AST: code block languages, 
 
 ```bash
 docmap file.md --section "Installation"    # Just that subtree
-docmap file.md --expand "Installation"      # Raw content of that section
+docmap file.md --expand "Installation"      # Raw source of that section (file:L-L)
+docmap . --brief                            # Session-start counts + recent docs
+docmap . --mentions src/foo.go              # Sections that mention a changed path
 ```
 
 ### Cross-file references

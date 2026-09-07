@@ -70,6 +70,34 @@ func TestParseHunkLinesPureDeletion(t *testing.T) {
 	}
 }
 
+func TestParseHunkLinesStripsANSI(t *testing.T) {
+	diff := "\x1b[1m@@ -1 +2 @@\x1b[0m\n+new\n"
+	got := parseHunkLines(diff)
+	if !got[2] {
+		t.Fatalf("ANSI-colored hunk header should still parse, got %v", got)
+	}
+}
+
+func TestChangedLinesViaSymlink(t *testing.T) {
+	repo, guide := initGitDocRepo(t)
+	write(t, guide, "# Guide\n\n## Setup\n\nhello\n")
+	gitCommit(t, repo, "second")
+
+	parent := t.TempDir()
+	link := filepath.Join(parent, "work")
+	if err := os.Symlink(repo, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	linked := filepath.Join(link, "docs", "guide.md")
+	got, err := ChangedLines(linked, "HEAD~1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[4] && !got[5] {
+		t.Fatalf("symlink path should still see the diff, got %v", got)
+	}
+}
+
 func TestChangedLinesFromOtherCwd(t *testing.T) {
 	repo, guide := initGitDocRepo(t)
 	write(t, guide, "# Guide\n\n## Setup\n\nhello\n")
