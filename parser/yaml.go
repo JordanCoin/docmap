@@ -28,9 +28,10 @@ func ParseYAML(content string) (*Document, error) {
 	topNode := root.Content[0]
 	doc.Sections = yamlNodeToSections(topNode, 1)
 
-	// Calculate total tokens
-	for _, s := range doc.GetAllSections() {
-		doc.TotalTokens += s.Tokens
+	// Cumulative tokens are computed once from the top; per-level calls
+	// double-counted every nested level (a 10 KB yaml reported 10^11 tokens).
+	for _, s := range doc.Sections {
+		doc.TotalTokens += calculateCumulativeTokens(s)
 	}
 
 	return doc, nil
@@ -102,11 +103,6 @@ func yamlMappingToSections(node *yaml.Node, level int) []*Section {
 			}
 		}
 
-		// Calculate cumulative tokens for sections with children
-		if len(section.Children) > 0 {
-			calculateCumulativeTokens(section)
-		}
-
 		sections = append(sections, section)
 	}
 
@@ -134,7 +130,6 @@ func yamlSequenceToSections(node *yaml.Node, level int) []*Section {
 				child.Parent = section
 			}
 			section.Children = children
-			calculateCumulativeTokens(section)
 
 		case yaml.SequenceNode:
 			section = &Section{
@@ -148,7 +143,6 @@ func yamlSequenceToSections(node *yaml.Node, level int) []*Section {
 				child.Parent = section
 			}
 			section.Children = children
-			calculateCumulativeTokens(section)
 
 		case yaml.ScalarNode:
 			section = &Section{

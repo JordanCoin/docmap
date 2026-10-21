@@ -469,3 +469,21 @@ func TestParseYAMLParentPointers(t *testing.T) {
 		t.Error("grandchild's parent should be child")
 	}
 }
+
+func TestParseYAMLTotalTokensBounded(t *testing.T) {
+	src := "a:\n  b:\n    c:\n      d: hello world\n      e: more text here\n  f: value\ng:\n  - x: 1\n    y: 2\n"
+	doc, err := ParseYAML(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := 0
+	for _, s := range doc.Sections {
+		sum += s.Tokens
+	}
+	if doc.TotalTokens != sum {
+		t.Fatalf("TotalTokens %d != sum of top-level cumulative %d", doc.TotalTokens, sum)
+	}
+	if doc.TotalTokens > len(src) {
+		t.Fatalf("TotalTokens %d exceeds source bytes %d: nested levels counted twice", doc.TotalTokens, len(src))
+	}
+}

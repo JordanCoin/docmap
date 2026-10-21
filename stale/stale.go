@@ -21,6 +21,8 @@ type Finding struct {
 	Section string `json:"section"`
 	Reason  string `json:"reason"`
 	Kind    string `json:"kind"`
+
+	envKey string // missing_env only; dropped when the code references the key
 }
 
 // Options controls local and optional remote stale checks.
@@ -45,6 +47,9 @@ type checkCtx struct {
 	statCache map[string]bool
 	cfg       configIndex
 	helpCache *sync.Map
+
+	deleted     map[string]string // repo-relative path -> "sha date", lazily from git log
+	deletedDone bool
 }
 
 // Check walks every section in docs and returns sorted findings.
@@ -69,7 +74,7 @@ func Check(docs []*parser.Document, opt Options) []Finding {
 			}
 			crumb := breadcrumb(sec)
 			out = append(out, checkPaths(doc.Filename, crumb, text, ctx, docRoot)...)
-			out = append(out, checkCommands(doc.Filename, crumb, text, opt, ctx.helpCache)...)
+			out = append(out, checkCommands(doc.Filename, crumb, text, ctx)...)
 			out = append(out, checkDates(doc.Filename, crumb, sec, text, opt)...)
 			out = append(out, checkEnvKeys(doc.Filename, crumb, text, ctx.cfg)...)
 			if opt.Remote {
@@ -79,6 +84,7 @@ func Check(docs []*parser.Document, opt Options) []Finding {
 			}
 		}
 	}
+	out = dropEnvKeysInCode(out, ctx.repoRoot)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].File != out[j].File {
 			return out[i].File < out[j].File
@@ -181,12 +187,31 @@ func backticks(text string) []string {
 	return out
 }
 
+var (
+	lineSuffixRe = regexp.MustCompile(`:L?\d+(?:[-,]L?\d+)*$`)
+	bareExtRe    = regexp.MustCompile(`^\.[a-z0-9]{1,5}$`)
+)
+
+// normalizePathClaim strips `:12` and `:L12-L20` line suffixes so
+// `cmd/hooks.go:1482` is checked as `cmd/hooks.go`. The trailing slash of
+// a directory claim stays: it is what tells `scanner/queries/` apart from an
+// owner/repo slug.
+func normalizePathClaim(s string) string {
+	return lineSuffixRe.ReplaceAllString(strings.TrimSpace(s), "")
+}
+
 func looksLikePath(s string) bool {
-	if strings.ContainsAny(s, " \t|;&<>#@![]{}*?^") {
+	if strings.ContainsAny(s, " \t|;&<>#@![]{}*?^=\"'") {
 		return false
 	}
-	if strings.HasPrefix(s, "--") || strings.HasPrefix(s, "-") {
+	if strings.HasPrefix(s, "--") || strings.HasPrefix(s, "-") || strings.HasPrefix(s, "_") {
 		return false
+	}
+	if strings.Contains(s, "...") || strings.Contains(s, "YYYY") {
+		return false
+	}
+	if bareExtRe.MatchString(s) && s != ".env" {
+		return false // `.md` is an extension, not a path
 	}
 	if skipPathCandidate(s) {
 		return false
@@ -255,9 +280,14 @@ func skipPathCandidate(s string) bool {
 
 func checkPaths(file, section, text string, ctx *checkCtx, docDir string) []Finding {
 	var out []Finding
-	for _, tick := range backticks(text) {
+	for _, raw := range backticks(text) {
+		tick := normalizePathClaim(raw)
 		if !looksLikePath(tick) {
 			continue
+		}
+		isDir := len(tick) > 1 && strings.HasSuffix(tick, "/")
+		if isDir {
+			tick = strings.TrimSuffix(tick, "/")
 		}
 		if pathExists(tick, ctx, docDir) {
 			continue
@@ -268,14 +298,153 @@ func checkPaths(file, section, text string, ctx *checkCtx, docDir string) []Find
 		if skipOptionalStackPath(tick, ctx) {
 			continue
 		}
+		// A claim is stale only when anchored: the path was in git and is
+		// gone, or its parent directory exists and the file does not. A bare
+		// name that never existed here is unverifiable and stays silent.
+		if strings.HasPrefix(tick, "../") {
+			continue // outside the repo: unverifiable
+		}
+		reason := ""
+		if removed := removedIn(tick, isDir, ctx, docDir); removed != "" {
+			reason = fmt.Sprintf("missing path `%s` (removed in %s)", raw, removed)
+		} else if parentExists(tick, ctx, docDir) {
+			reason = fmt.Sprintf("missing path `%s`", raw)
+		} else {
+			continue
+		}
+		if ignoredByGit(tick, ctx, docDir) {
+			continue // a build output the doc tells you to create (dist/, .env)
+		}
 		out = append(out, Finding{
 			File:    file,
 			Section: section,
 			Kind:    "missing_path",
-			Reason:  fmt.Sprintf("missing path `%s`", tick),
+			Reason:  reason,
 		})
 	}
 	return out
+}
+
+// repoCandidates lists the repo-relative spellings a relative claim may
+// resolve to: as written, relative to the doc's directory, and relative to
+// Root. Absolute and ~ paths cannot be in the repo and yield nothing.
+func repoCandidates(cand string, ctx *checkCtx, docDir string) []string {
+	if ctx.repoRoot == "" || filepath.IsAbs(cand) || strings.HasPrefix(cand, "~") {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, base := range []string{ctx.repoRoot, docDir, ctx.opt.Root} {
+		if base == "" {
+			continue
+		}
+		rel, err := filepath.Rel(ctx.repoRoot, filepath.Join(base, filepath.FromSlash(cand)))
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		if !seen[rel] {
+			seen[rel] = true
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// removedIn returns "sha date" of the commit that deleted the claimed path,
+// or "" when git never tracked it.
+func removedIn(cand string, isDir bool, ctx *checkCtx, docDir string) string {
+	rels := repoCandidates(cand, ctx, docDir)
+	if len(rels) == 0 {
+		return ""
+	}
+	if !ctx.deletedDone {
+		ctx.deletedDone = true
+		ctx.deleted = deletedPaths(ctx.repoRoot)
+	}
+	for _, rel := range rels {
+		if v, ok := ctx.deleted[rel]; ok {
+			return v
+		}
+		if !isDir {
+			continue
+		}
+		// A deleted directory shows up as its files.
+		for p, v := range ctx.deleted {
+			if strings.HasPrefix(p, rel+"/") {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// deletedPaths maps every path git ever deleted to the newest "sha date"
+// that deleted it. One git log per run; 0.2 s on a 30k-commit repo.
+func deletedPaths(repoRoot string) map[string]string {
+	out := map[string]string{}
+	if repoRoot == "" {
+		return out
+	}
+	raw, err := exec.Command("git", "-C", repoRoot, "log", "--no-renames", "--diff-filter=D", "--name-only", "--format=%h%x09%as").Output()
+	if err != nil {
+		return out
+	}
+	commit := ""
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "\t") {
+			commit = strings.ReplaceAll(line, "\t", " ")
+			continue
+		}
+		if _, seen := out[line]; !seen {
+			out[line] = commit
+		}
+	}
+	return out
+}
+
+// ignoredByGit reports whether any repo spelling of the claim is
+// .gitignore'd: a path the repo deliberately does not track (dist/, .env)
+// is not a stale claim.
+func ignoredByGit(cand string, ctx *checkCtx, docDir string) bool {
+	for _, rel := range repoCandidates(cand, ctx, docDir) {
+		key := "\x00ignore:" + rel
+		if v, ok := ctx.statCache[key]; ok {
+			if v {
+				return true
+			}
+			continue
+		}
+		err := exec.Command("git", "-C", ctx.repoRoot, "check-ignore", "-q", "--", rel).Run()
+		ctx.statCache[key] = err == nil
+		if err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// parentExists reports whether a relative file claim (a basename with an
+// extension) has an existing parent directory under the doc dir, Root or
+// repo root. Directory claims are anchored by git history only: a parent
+// that exists says nothing about whether `cmd/tool/` was ever meant to.
+func parentExists(cand string, ctx *checkCtx, docDir string) bool {
+	if !strings.Contains(cand, "/") || filepath.IsAbs(cand) || strings.HasPrefix(cand, "~") {
+		return false
+	}
+	if !strings.Contains(filepath.Base(cand), ".") {
+		return false
+	}
+	parent := filepath.Dir(filepath.FromSlash(cand))
+	for _, base := range []string{docDir, ctx.opt.Root, ctx.repoRoot} {
+		if base != "" && cachedStat(ctx, filepath.Join(base, parent)) {
+			return true
+		}
+	}
+	return false
 }
 
 // optionalStackEvidence maps a stack/lockfile basename to root markers that
@@ -374,7 +543,8 @@ var cmdSkip = map[string]bool{
 	"else": true, "for": true, "while": true, "case": true, "esac": true,
 }
 
-func checkCommands(file, section, text string, opt Options, helpCache *sync.Map) []Finding {
+func checkCommands(file, section, text string, ctx *checkCtx) []Finding {
+	opt, helpCache := ctx.opt, ctx.helpCache
 	var out []Finding
 	for _, tick := range backticks(text) {
 		bin, flags := parseCommand(tick)
@@ -385,6 +555,9 @@ func checkCommands(file, section, text string, opt Options, helpCache *sync.Map)
 			continue
 		}
 		if _, err := opt.LookPath(bin); err != nil {
+			if projectBin(bin, ctx) {
+				continue // installed by the project itself (node_modules/.bin), run via npx
+			}
 			out = append(out, Finding{
 				File:    file,
 				Section: section,
@@ -409,6 +582,15 @@ func checkCommands(file, section, text string, opt Options, helpCache *sync.Map)
 		}
 	}
 	return out
+}
+
+func projectBin(bin string, ctx *checkCtx) bool {
+	for _, base := range []string{ctx.opt.Root, ctx.repoRoot} {
+		if base != "" && cachedStat(ctx, filepath.Join(base, "node_modules", ".bin", bin)) {
+			return true
+		}
+	}
+	return false
 }
 
 var cmdNameRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
@@ -445,17 +627,18 @@ var likelyCLIBins = map[string]struct{}{
 	"git": {}, "go": {}, "npm": {}, "npx": {}, "yarn": {}, "pnpm": {}, "pip": {}, "pip3": {}, "python": {}, "python3": {},
 	"node": {}, "ruby": {}, "cargo": {}, "rustc": {}, "docker": {}, "docker-compose": {}, "kubectl": {}, "helm": {},
 	"make": {}, "cmake": {}, "curl": {}, "wget": {}, "jq": {}, "rg": {}, "ripgrep": {}, "fd": {}, "sed": {}, "awk": {}, "grep": {},
-	"gh": {}, "aws": {}, "gcloud": {}, "az": {}, "terraform": {}, "ansible": {}, "brew": {}, "apt": {}, "yum": {}, "pacman": {},
-	"systemctl": {}, "ssh": {}, "scp": {}, "rsync": {}, "tar": {}, "zip": {}, "unzip": {}, "openssl": {}, "sqlite3": {},
+	"gh": {}, "aws": {}, "gcloud": {}, "az": {}, "terraform": {}, "ansible": {},
+	"ssh": {}, "scp": {}, "rsync": {}, "tar": {}, "zip": {}, "unzip": {}, "openssl": {}, "sqlite3": {},
 	"psql": {}, "mysql": {}, "redis-cli": {}, "mongosh": {}, "firebase": {}, "vercel": {}, "netlify": {}, "wrangler": {},
 	"docmap": {}, "codemap": {}, "eslint": {}, "prettier": {}, "tsc": {}, "webpack": {}, "vite": {}, "next": {},
 	"poetry": {}, "uv": {}, "bun": {}, "deno": {}, "java": {}, "javac": {}, "mvn": {}, "gradle": {}, "dotnet": {}, "swift": {},
-	"xcodebuild": {}, "pod": {}, "flutter": {}, "dart": {}, "php": {}, "composer": {}, "lua": {}, "perl": {}, "R": {},
+	"xcodebuild": {}, "pod": {}, "flutter": {}, "dart": {}, "php": {}, "composer": {}, "lua": {}, "perl": {},
 	"bazel": {}, "ninja": {}, "meson": {}, "pkg-config": {}, "clang": {}, "gcc": {}, "g++": {}, "lldb": {}, "gdb": {},
 }
 
+// likelyCLI is case-sensitive: `Next` in prose is a word, `next` is the CLI.
 func likelyCLI(bin string) bool {
-	_, ok := likelyCLIBins[strings.ToLower(bin)]
+	_, ok := likelyCLIBins[bin]
 	return ok
 }
 
@@ -548,9 +731,13 @@ func extractDates(text string, now time.Time) []time.Time {
 var envTickRe = regexp.MustCompile(`\$\{?([A-Z][A-Z0-9_]{1,63})\}?`)
 var envWordRe = regexp.MustCompile(`\b([A-Z][A-Z0-9_]{2,63})\b`)
 
+// prefixes lists the `PREFIX_` conventions seen in the config index; a
+// documented key outside them (NOTION_KEY in a repo whose keys are
+// OPENCLAW_*) belongs to a third party and is not checked.
 type configIndex struct {
-	keys   map[string]bool
-	values map[string]map[string]bool // key -> set of values seen
+	keys     map[string]bool
+	values   map[string]map[string]bool // key -> set of values seen
+	prefixes map[string]bool            // `PREFIX_` conventions of the keys, computed once
 }
 
 func loadConfigIndex(root string) configIndex {
@@ -594,6 +781,7 @@ func loadConfigIndex(root string) configIndex {
 		seenFile[f] = true
 		ingestConfigFile(f, &idx)
 	}
+	idx.prefixes = configPrefixes(idx)
 	return idx
 }
 
@@ -645,17 +833,46 @@ func ingestConfigFile(path string, idx *configIndex) {
 	}
 }
 
+var envKeyExactRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,63}$`)
+
+func envPrefix(k string) string {
+	if i := strings.Index(k, "_"); i > 0 {
+		return k[:i+1]
+	}
+	return ""
+}
+
+func configPrefixes(cfg configIndex) map[string]bool {
+	if cfg.prefixes != nil {
+		return cfg.prefixes
+	}
+	out := map[string]bool{}
+	for k := range cfg.keys {
+		if p := envPrefix(k); p != "" && strings.ToUpper(k) == k {
+			out[p] = true
+		}
+	}
+	return out
+}
+
 func checkEnvKeys(file, section, text string, cfg configIndex) []Finding {
 	if len(cfg.keys) == 0 {
 		return nil
 	}
+	prefixes := cfg.prefixes
 	candidates := map[string]bool{}
 	addKey := func(k string) {
 		k = strings.TrimSpace(k)
 		k = strings.TrimPrefix(k, "$")
 		k = strings.TrimPrefix(k, "{")
 		k = strings.TrimSuffix(k, "}")
-		if k == "" || !envWordRe.MatchString(k) {
+		if i := strings.Index(k, "="); i > 0 {
+			k = k[:i] // `KEY=value` claims the key
+		}
+		if !envKeyExactRe.MatchString(k) {
+			return // `OPENCLAW_STATE_DIR/logs/x.log`, `DYLD_*` are not keys
+		}
+		if len(prefixes) > 0 && !prefixes[envPrefix(k)] {
 			return
 		}
 		candidates[k] = true
@@ -689,7 +906,48 @@ func checkEnvKeys(file, section, text string, cfg configIndex) []Finding {
 			Section: section,
 			Kind:    "missing_env",
 			Reason:  fmt.Sprintf("env/config key `%s` not found in root config/.env.example", k),
+			envKey:  k,
 		})
+	}
+	return out
+}
+
+// dropEnvKeysInCode removes missing_env findings whose key appears as a whole
+// word in any tracked non-markdown file: the code reads it, so the doc is
+// right even when .env.example is not. One git grep per run.
+func dropEnvKeysInCode(in []Finding, repoRoot string) []Finding {
+	if repoRoot == "" {
+		return in
+	}
+	keys := map[string]bool{}
+	for _, f := range in {
+		if f.envKey != "" {
+			keys[f.envKey] = true
+		}
+	}
+	if len(keys) == 0 {
+		return in
+	}
+	tmp, err := os.CreateTemp("", "docmap-keys-*")
+	if err != nil {
+		return in
+	}
+	defer os.Remove(tmp.Name())
+	for k := range keys {
+		fmt.Fprintln(tmp, k)
+	}
+	tmp.Close()
+	raw, _ := exec.Command("git", "-C", repoRoot, "grep", "-I", "-o", "-h", "-w", "-F", "-f", tmp.Name(), "--", ".", ":!*.md", ":!*.markdown").Output()
+	found := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		found[strings.TrimSpace(line)] = true
+	}
+	out := in[:0]
+	for _, f := range in {
+		if f.envKey != "" && found[f.envKey] {
+			continue
+		}
+		out = append(out, f)
 	}
 	return out
 }

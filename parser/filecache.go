@@ -9,7 +9,7 @@ import (
 	"sync"
 )
 
-const cacheVersion = 1
+const cacheVersion = 2 // 2: yaml TotalTokens no longer double-counted
 
 // cachePayload is the on-disk gob form under .docmap/cache.
 // Keyed by absolute path; validated against mtime (unix nano) + size.
