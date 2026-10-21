@@ -11,7 +11,7 @@ import (
 	"golang.org/x/term"
 )
 
-const (
+var (
 	reset  = "\033[0m"
 	bold   = "\033[1m"
 	dim    = "\033[2m"
@@ -20,6 +20,34 @@ const (
 	green  = "\033[32m"
 	blue   = "\033[34m"
 )
+
+func init() { applyColorPolicy() }
+
+// applyColorPolicy blanks every escape when stdout is not a terminal or
+// NO_COLOR is set (https://no-color.org). Agents capture stdout; raw
+// escapes in their context are noise.
+func applyColorPolicy() {
+	if os.Getenv("NO_COLOR") != "" || !term.IsTerminal(int(os.Stdout.Fd())) {
+		reset, bold, dim, cyan, yellow, green, blue = "", "", "", "", "", "", ""
+	}
+}
+
+// largestSection returns the title of the section with the most tokens, so
+// the footer names a real target.
+func largestSection(doc *parser.Document) string {
+	best := ""
+	max := -1
+	for _, s := range doc.GetAllSections() {
+		// Skip the H1 when deeper sections exist: expanding it dumps the file.
+		if s.Level == 1 && len(s.Children) > 0 {
+			continue
+		}
+		if s.Tokens > max && strings.TrimSpace(s.Title) != "" {
+			best, max = s.Title, s.Tokens
+		}
+	}
+	return best
+}
 
 // Tree renders the full document map
 func Tree(doc *parser.Document) {
@@ -33,6 +61,9 @@ func Tree(doc *parser.Document) {
 	}
 
 	fmt.Println()
+	if title := largestSection(doc); title != "" {
+		fmt.Printf("expand a section: docmap %s --expand %q\n", doc.Filename, title)
+	}
 }
 
 func printHeader(doc *parser.Document) {
@@ -1070,6 +1101,7 @@ func MultiTree(docs []*parser.Document, dirName string) {
 		renderDocSummary(doc, isLast)
 	}
 	fmt.Println()
+	fmt.Printf("find content: docmap %s --search <term>\n", dirName)
 }
 
 // aggregateSummary sums ContentSummary across every doc so the multi-file

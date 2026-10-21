@@ -408,6 +408,8 @@ func main() {
 			render.ExpandSection(doc, expandSection)
 		} else if sectionFilter != "" {
 			render.FilteredTree(doc, sectionFilter)
+		} else if n := smallDocLines(target, doc); n > 0 {
+			fmt.Printf("%s: %d lines, read it directly\n", target, n)
 		} else {
 			render.Tree(doc)
 		}
@@ -675,6 +677,26 @@ func sectionMentions(doc *parser.Document, sec *parser.Section, needles []string
 		}
 	}
 	return false
+}
+
+// smallDocThreshold is the line count below which a markdown tree costs more
+// context than the file itself.
+const smallDocThreshold = 150
+
+// smallDocLines returns the line count when target is a markdown file under
+// smallDocThreshold lines, else 0.
+func smallDocLines(target string, doc *parser.Document) int {
+	if !strings.HasSuffix(strings.ToLower(target), ".md") {
+		return 0
+	}
+	n := strings.Count(doc.Source, "\n")
+	if doc.Source != "" && !strings.HasSuffix(doc.Source, "\n") {
+		n++
+	}
+	if n >= smallDocThreshold {
+		return 0
+	}
+	return n
 }
 
 func outputExpand(docs []*parser.Document, name string) {
