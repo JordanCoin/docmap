@@ -41,6 +41,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	switch os.Args[1] {
+	case "hook":
+		os.Exit(runHook(os.Args[2:]))
+	case "setup":
+		os.Exit(runSetup(os.Args[2:]))
+	}
+
 	if os.Args[1] == "mcp" {
 		docmapmcp.Version = version
 		if err := docmapmcp.Run(context.Background()); err != nil {
@@ -328,7 +335,12 @@ func main() {
 
 	if info.IsDir() {
 		// Multi-file mode: find all .md files
-		docs := docset.LoadDir(target, walkAll)
+		var docs []*parser.Document
+		if brief || staleMode || mentionsFlag {
+			docs = docset.LoadDocs(target, walkAll)
+		} else {
+			docs = docset.LoadDir(target, walkAll)
+		}
 		if len(docs) == 0 {
 			fmt.Println("No markdown, PDF, or YAML files found")
 			os.Exit(1)
@@ -398,6 +410,8 @@ func main() {
 			render.ExpandSection(doc, expandSection)
 		} else if sectionFilter != "" {
 			render.FilteredTree(doc, sectionFilter)
+		} else if n := smallDocLines(target, doc); n > 0 {
+			fmt.Printf("%s: %d lines, read it directly\n", target, n)
 		} else {
 			render.Tree(doc)
 		}
@@ -604,11 +618,24 @@ func briefTokens(n int) string {
 }
 
 func outputMentions(docs []*parser.Document, paths []string) {
+	lines := collectMentions(docs, paths)
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	if len(lines) == 0 {
+		fmt.Println("No sections mention those paths")
+	}
+}
+
+// collectMentions returns unique "doc > section" lines, in doc order, for
+// sections that mention any of paths.
+func collectMentions(docs []*parser.Document, paths []string) []string {
 	type needleSet struct {
 		path    string
 		needles []string
 	}
 	var sets []needleSet
+	var out []string
 	for _, p := range paths {
 		if n := mentionNeedles(p); len(n) > 0 {
 			sets = append(sets, needleSet{p, n})
@@ -675,13 +702,11 @@ func outputMentions(docs []*parser.Document, paths []string) {
 		for _, line := range ls {
 			if !seen[line] {
 				seen[line] = true
-				fmt.Println(line)
+				out = append(out, line)
 			}
 		}
 	}
-	if len(seen) == 0 {
-		fmt.Println("No sections mention those paths")
-	}
+	return out
 }
 
 func mentionIsSelf(filename, changed string) bool {
@@ -759,6 +784,26 @@ func blobMentions(blob string, sec *parser.Section, doc *parser.Document, refTar
 		}
 	}
 	return false
+}
+
+// smallDocThreshold is the line count below which a markdown tree costs more
+// context than the file itself.
+const smallDocThreshold = 150
+
+// smallDocLines returns the line count when target is a markdown file under
+// smallDocThreshold lines, else 0.
+func smallDocLines(target string, doc *parser.Document) int {
+	if !strings.HasSuffix(strings.ToLower(target), ".md") {
+		return 0
+	}
+	n := strings.Count(doc.Source, "\n")
+	if doc.Source != "" && !strings.HasSuffix(doc.Source, "\n") {
+		n++
+	}
+	if n >= smallDocThreshold {
+		return 0
+	}
+	return n
 }
 
 func outputExpand(docs []*parser.Document, name string) {
@@ -990,6 +1035,7 @@ Examples:
   docmap . --brief --stale           # Brief plus stale claim count
   docmap . --stale                   # Flag stale path/binary/date/env claims
   docmap . --stale --remote          # Also HEAD-check URLs and compare config values
+  docmap setup                       # Install Claude Code / Codex hooks (--check to verify)
   docmap . --mentions parser/git.go  # Sections that mention a changed path
   docmap . --mentions --since HEAD   # Mentions of files git says changed
   docmap . --since HEAD --json       # Changed docs as JSON (includes deletions)

@@ -1,6 +1,8 @@
 # docmap
 
-Run `docmap .` at the start of any session to understand documentation structure.
+Run `docmap setup` once per repo. The hooks then run docmap for you: a docs brief at session start, the doc sections that mention each file you edit, and the section tree before you read a long markdown file. The commands below are for going deeper.
+
+Without hooks, run `docmap .` at the start of any session to understand documentation structure.
 
 ## When to use
 

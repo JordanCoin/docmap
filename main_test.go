@@ -247,3 +247,17 @@ func TestConvertSectionsSince(t *testing.T) {
 		t.Fatalf("unchanged Other should be omitted, got %s", blob)
 	}
 }
+
+func TestSmallDocLines(t *testing.T) {
+	small := strings.Repeat("line\n", 149)
+	if n := smallDocLines("a.md", &parser.Document{Source: small}); n != 149 {
+		t.Fatalf("149-line doc: got %d want 149", n)
+	}
+	big := strings.Repeat("line\n", 150)
+	if n := smallDocLines("a.md", &parser.Document{Source: big}); n != 0 {
+		t.Fatalf("150-line doc should render a tree, got %d", n)
+	}
+	if n := smallDocLines("a.yaml", &parser.Document{Source: small}); n != 0 {
+		t.Fatalf("yaml never short-circuits, got %d", n)
+	}
+}

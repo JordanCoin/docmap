@@ -50,6 +50,22 @@ scoop install docmap
 
 > Other options: [Releases](https://github.com/JordanCoin/docmap/releases) | `go install github.com/JordanCoin/docmap@latest`
 
+## Hooks (recommended)
+
+One command wires docmap into Claude Code and Codex so it fires without being asked:
+
+```bash
+docmap setup            # detected agents; or --agent claude|codex|both, --global, --check
+```
+
+What then happens, with no prompt engineering:
+
+- **Session start**: `📚 Docs: 26 md, 0 pdf · 222 sections · ~55.7k tokens`, the 5 most recently committed docs, and the stale claim count (skipped if it would take over 1.5 s).
+- **After every Edit/Write**: `📚 Docs mentioning cmd/hooks.go (9 sections):` followed by up to 8 `doc > section` lines. Nothing is printed when no doc mentions the file.
+- **Before Read of a markdown file over 200 lines or any PDF**: the section tree (max 60 lines, once per file per session) and `Read only the section you need: docmap <file> --expand "<title>"`.
+
+Entries go in `.claude/settings.local.json` and `.codex/hooks.json` (`--global` for `~/.claude/settings.json`, `~/.codex/hooks.json`). Setup is idempotent and never touches other hooks.
+
 ## MCP server
 
 `docmap mcp` speaks stdio [MCP](https://modelcontextprotocol.io) so agents can call structured tools instead of shelling out and scraping ANSI.
@@ -327,7 +343,7 @@ Together: complete spatial awareness of any repository.
 
 No API calls. Just fast, local parsing.
 
-**Performance:** parsed documents are cached under `<repo>/.docmap/cache` (git root of each file), keyed by absolute path + mtime + size. Set `DOCMAP_NO_CACHE=1` to disable.
+**Performance:** parsed documents are cached under your user cache directory (`~/Library/Caches/docmap/cache/<repo hash>/` on macOS, `~/.cache/docmap/cache/<repo hash>/` on Linux), keyed by absolute path + mtime + size. Nothing is written inside the repo. Set `DOCMAP_NO_CACHE=1` to disable. Older versions wrote `<repo>/.docmap/cache`; delete it if one is left behind.
 
 ## JSON output
 
