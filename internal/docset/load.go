@@ -62,6 +62,17 @@ func gitTrackedSet(dir string) map[string]bool {
 // Collection uses charlievieth/fastwalk (parallel WalkDir); parsing uses a
 // worker pool bounded by GOMAXPROCS. Results are sorted by Filename.
 func LoadDir(dir string, all bool) []*parser.Document {
+	return loadDir(dir, all, true)
+}
+
+// LoadDocs is LoadDir without YAML. YAML under a tree is config, fixtures and
+// CI, not documentation: gumroad has 3,514 spec/support YAML files that would
+// otherwise count as docs. Explicit YAML paths and --all still load it.
+func LoadDocs(dir string, all bool) []*parser.Document {
+	return loadDir(dir, all, all)
+}
+
+func loadDir(dir string, all, yaml bool) []*parser.Document {
 	var tracked map[string]bool
 	if !all {
 		tracked = gitTrackedSet(dir)
@@ -87,7 +98,7 @@ func LoadDir(dir string, all bool) []*parser.Document {
 		isMd := strings.HasSuffix(lowerPath, ".md")
 		isPdf := strings.HasSuffix(lowerPath, ".pdf")
 		isYaml := strings.HasSuffix(lowerPath, ".yaml") || strings.HasSuffix(lowerPath, ".yml")
-		if !isMd && !isPdf && !isYaml {
+		if !isMd && !isPdf && !(yaml && isYaml) {
 			return nil
 		}
 
