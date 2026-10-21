@@ -8,9 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/JordanCoin/docmap/internal/docset"
 	docmapmcp "github.com/JordanCoin/docmap/mcp"
@@ -536,12 +538,12 @@ func outputBrief(docs []*parser.Document, root string, days int, runStale bool) 
 	fmt.Printf("%d files (%d md) · %d sections · ~%s tokens\n",
 		len(docs), md, totalSections, briefTokens(totalTokens))
 
-	recent := parser.RecentFiles(root, 5)
+	recent := recentDocs(root, docs, 5)
 	if len(recent) == 0 {
 		recent = docset.RecentByMtime(docs, root, 5)
 	}
 	if len(recent) > 0 {
-		fmt.Printf("recent: %s\n", strings.Join(recent, ", "))
+		fmt.Printf("recent docs: %s\n", strings.Join(recent, ", "))
 	}
 	if !runStale {
 		fmt.Println("stale: run with --brief --stale")
@@ -583,6 +585,8 @@ func pluralClaims(n int) string {
 	return "s"
 }
 
+// recentDocs keeps the first limit git-recent paths that are docs. YAML
+// counts only when the loaded doc set itself contains YAML.
 func briefTokens(n int) string {
 	if n >= 1000 {
 		return fmt.Sprintf("%.1fk", float64(n)/1000.0)
@@ -603,25 +607,77 @@ func outputMentions(docs []*parser.Document, paths []string) {
 // collectMentions returns unique "doc > section" lines, in doc order, for
 // sections that mention any of paths.
 func collectMentions(docs []*parser.Document, paths []string) []string {
-	seen := map[string]bool{}
+	type needleSet struct {
+		path    string
+		needles []string
+	}
+	var sets []needleSet
 	var out []string
 	for _, p := range paths {
-		needles := mentionNeedles(p)
-		if len(needles) == 0 {
-			continue
+		if n := mentionNeedles(p); len(n) > 0 {
+			sets = append(sets, needleSet{p, n})
 		}
-		for _, doc := range docs {
-			if mentionIsSelf(doc.Filename, p) {
-				continue
+	}
+	// One doc per task, results kept in doc order so output is stable.
+	// Each section is lowercased once, not once per changed path
+	// (gumroad: 3.5k docs, 1.3M sections, 119 paths).
+	lines := make([][]string, len(docs))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	for i, doc := range docs {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, doc *parser.Document) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// Prefilter at document level: a needle absent from the whole
+			// source is absent from every section.
+			source := strings.ToLower(doc.Source)
+			var docSets []needleSet
+			for _, set := range sets {
+				if mentionIsSelf(doc.Filename, set.path) {
+					continue
+				}
+				var hit []string
+				for _, n := range set.needles {
+					if containsFast(source, n) {
+						hit = append(hit, n)
+					}
+				}
+				if len(hit) > 0 {
+					docSets = append(docSets, needleSet{set.path, hit})
+				}
 			}
-			for _, sec := range doc.GetAllSections() {
-				if !sectionMentions(doc, sec, needles) {
-					continue
+			if len(docSets) == 0 {
+				return
+			}
+			var refTargets []string
+			for _, ref := range doc.References {
+				refTargets = append(refTargets, strings.ToLower(filepath.ToSlash(ref.Target)))
+			}
+			// Markdown sections carry only their own text. YAML and PDF
+			// sections carry their whole subtree at every level, so the top
+			// level alone sees every byte once and still names the section.
+			secs := doc.GetAllSections()
+			if !strings.HasSuffix(strings.ToLower(doc.Filename), ".md") {
+				secs = doc.Sections
+			}
+			for _, sec := range secs {
+				blob := strings.ToLower(sec.Title + "\n" + sec.Content)
+				for _, set := range docSets {
+					if blobMentions(blob, sec, doc, refTargets, set.needles) {
+						lines[i] = append(lines[i], doc.Filename+" > "+sec.Title)
+						break
+					}
 				}
-				line := doc.Filename + " > " + sec.Title
-				if seen[line] {
-					continue
-				}
+			}
+		}(i, doc)
+	}
+	wg.Wait()
+	seen := map[string]bool{}
+	for _, ls := range lines {
+		for _, line := range ls {
+			if !seen[line] {
 				seen[line] = true
 				out = append(out, line)
 			}
@@ -653,25 +709,53 @@ func mentionNeedles(p string) []string {
 		}
 		out = append(out, s)
 	}
-	add(p)
+	// A section that contains the full path also contains its basename, so
+	// the basename alone decides; the full path only matters when the
+	// basename is too short to search. Short needles stay on the SIMD
+	// strings.Index path; paths over 32 bytes fall back to Rabin-Karp,
+	// which is what made gumroad's 119-path run take two minutes.
 	add(filepath.Base(p))
+	if len(out) == 0 {
+		add(p)
+	}
 	return out
 }
 
+// containsFast probes with the needle's last 32 bytes first. strings.Index
+// uses SIMD for needles up to 32 bytes and Rabin-Karp above that; a long
+// needle can only be present where its tail is, so the cheap probe answers
+// the common "absent" case without the slow scan.
+func containsFast(haystack, needle string) bool {
+	if len(needle) > 32 {
+		if !strings.Contains(haystack, needle[len(needle)-32:]) {
+			return false
+		}
+	}
+	return strings.Contains(haystack, needle)
+}
+
+var _ = sectionMentions // kept for hook callers; outputMentions inlines the fast path
+
 func sectionMentions(doc *parser.Document, sec *parser.Section, needles []string) bool {
-	blob := strings.ToLower(sec.Title + "\n" + sec.Content)
+	var refTargets []string
+	for _, ref := range doc.References {
+		refTargets = append(refTargets, strings.ToLower(filepath.ToSlash(ref.Target)))
+	}
+	return blobMentions(strings.ToLower(sec.Title+"\n"+sec.Content), sec, doc, refTargets, needles)
+}
+
+func blobMentions(blob string, sec *parser.Section, doc *parser.Document, refTargets []string, needles []string) bool {
 	for _, n := range needles {
-		if strings.Contains(blob, n) {
+		if containsFast(blob, n) {
 			return true
 		}
 	}
-	for _, ref := range doc.References {
+	for i, ref := range doc.References {
 		if ref.Line < sec.LineStart || ref.Line > sec.LineEnd {
 			continue
 		}
-		tgt := strings.ToLower(filepath.ToSlash(ref.Target))
 		for _, n := range needles {
-			if strings.Contains(tgt, n) {
+			if strings.Contains(refTargets[i], n) {
 				return true
 			}
 		}

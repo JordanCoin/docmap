@@ -317,7 +317,9 @@ func ChangedPathsAll(dir, ref string) ([]PathChange, error) {
 				continue
 			}
 			rel = filepath.ToSlash(rel)
-			if seen[rel] {
+			// docmap's own untracked cache is not a change (gumroad: 3,563
+			// cache files became mention needles and ran for two minutes).
+			if seen[rel] || rel == ".docmap" || strings.HasPrefix(rel, ".docmap/") {
 				continue
 			}
 			changes = append(changes, PathChange{Path: rel, Status: "A"})
