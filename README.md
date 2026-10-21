@@ -327,7 +327,7 @@ Together: complete spatial awareness of any repository.
 
 No API calls. Just fast, local parsing.
 
-**Performance:** parsed documents are cached under `<repo>/.docmap/cache` (git root of each file), keyed by absolute path + mtime + size. Set `DOCMAP_NO_CACHE=1` to disable.
+**Performance:** parsed documents are cached under your user cache directory (`~/Library/Caches/docmap/cache/<repo hash>/` on macOS, `~/.cache/docmap/cache/<repo hash>/` on Linux), keyed by absolute path + mtime + size. Nothing is written inside the repo. Set `DOCMAP_NO_CACHE=1` to disable. Older versions wrote `<repo>/.docmap/cache`; delete it if one is left behind.
 
 ## JSON output
 

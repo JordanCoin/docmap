@@ -3,6 +3,7 @@ package parser
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,5 +140,26 @@ func TestParseFileYAMLCache(t *testing.T) {
 				t.Fatal("parent not rewired after yaml cache load")
 			}
 		}
+	}
+}
+
+func TestCacheDirOutsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir := cacheDirFor(filepath.Join(repo, "docs", "a.md"))
+	if dir == "" {
+		t.Skip("no user cache dir")
+	}
+	if strings.HasPrefix(dir, repo) {
+		t.Fatalf("cache dir %q is inside the repo", dir)
+	}
+	base, _ := os.UserCacheDir()
+	if !strings.HasPrefix(dir, filepath.Join(base, "docmap", "cache")) {
+		t.Fatalf("cache dir %q not under user cache", dir)
+	}
+	if other := cacheDirFor(filepath.Join(repo, "b.md")); other != dir {
+		t.Fatalf("same repo, different dirs: %q vs %q", dir, other)
 	}
 }

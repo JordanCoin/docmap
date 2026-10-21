@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/gob"
 	"encoding/hex"
@@ -11,7 +12,7 @@ import (
 
 const cacheVersion = 1
 
-// cachePayload is the on-disk gob form under .docmap/cache.
+// cachePayload is the on-disk gob form under the user cache dir.
 // Keyed by absolute path; validated against mtime (unix nano) + size.
 // Markdown entries store Nodes (acyclic); Sections/References are rebuilt
 // on load. YAML entries store Sections (Parents cleared) when Nodes is empty.
@@ -77,28 +78,33 @@ func cacheEnabled() bool {
 	return os.Getenv("DOCMAP_NO_CACHE") != "1"
 }
 
-// cacheDirForTest overrides .docmap/cache location in tests. Empty = default.
+// cacheDirForTest overrides the cache location in tests. Empty = default.
 var cacheDirForTest string
 
-// cacheDirFor returns the on-disk cache directory for absFile.
-// Prefer <git-root>/.docmap/cache (walk for .git), else beside the file.
-// Not process cwd — scanning repo B from repo A must not write into A.
+// cacheDirFor returns the on-disk cache directory for absFile:
+// <UserCacheDir>/docmap/cache/<sha1 of repo root, 12 hex>/. The repo root is
+// the nearest ancestor holding .git, else the file's directory. Nothing is
+// written inside the user's repo, so git status stays clean.
 func cacheDirFor(absFile string) string {
 	if cacheDirForTest != "" {
 		return cacheDirForTest
 	}
-	dir := filepath.Dir(absFile)
-	for {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	root := filepath.Dir(absFile)
+	for dir := root; ; dir = filepath.Dir(dir) {
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return filepath.Join(dir, ".docmap", "cache")
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
+			root = dir
 			break
 		}
-		dir = parent
+		if filepath.Dir(dir) == dir {
+			break
+		}
 	}
-	return filepath.Join(filepath.Dir(absFile), ".docmap", "cache")
+	sum := sha1.Sum([]byte(root))
+	return filepath.Join(base, "docmap", "cache", hex.EncodeToString(sum[:6]))
 }
 
 func cacheFileName(absPath string) string {
