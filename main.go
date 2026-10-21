@@ -538,7 +538,7 @@ func outputBrief(docs []*parser.Document, root string, days int, runStale bool) 
 	fmt.Printf("%d files (%d md) · %d sections · ~%s tokens\n",
 		len(docs), md, totalSections, briefTokens(totalTokens))
 
-	recent := recentDocs(parser.RecentFiles(root, 40), docs, 5)
+	recent := recentDocs(root, docs, 5)
 	if len(recent) == 0 {
 		recent = docset.RecentByMtime(docs, root, 5)
 	}
@@ -587,29 +587,6 @@ func pluralClaims(n int) string {
 
 // recentDocs keeps the first limit git-recent paths that are docs. YAML
 // counts only when the loaded doc set itself contains YAML.
-func recentDocs(paths []string, docs []*parser.Document, limit int) []string {
-	hasYAML := false
-	for _, d := range docs {
-		if l := strings.ToLower(d.Filename); strings.HasSuffix(l, ".yaml") || strings.HasSuffix(l, ".yml") {
-			hasYAML = true
-			break
-		}
-	}
-	var out []string
-	for _, p := range paths {
-		l := strings.ToLower(p)
-		isYAML := strings.HasSuffix(l, ".yaml") || strings.HasSuffix(l, ".yml")
-		if !parser.IsDocPath(p) || (isYAML && !hasYAML) {
-			continue
-		}
-		out = append(out, p)
-		if len(out) == limit {
-			break
-		}
-	}
-	return out
-}
-
 func briefTokens(n int) string {
 	if n >= 1000 {
 		return fmt.Sprintf("%.1fk", float64(n)/1000.0)
