@@ -106,6 +106,10 @@ Inside Claude Code, add this repo as a marketplace and install the plugin:
 
 That's it. Claude Code clones the repo, picks up `.claude-plugin/marketplace.json`, and installs the `docmap` plugin from `plugins/docmap/`. The skill becomes available as `/docmap` and Claude will auto-invoke it when you're working with markdown docs.
 
+The plugin also ships the three hooks (`hooks/hooks.json`), so a marketplace install needs no `docmap setup`: session start, post-edit doc mentions and pre-read trees fire on their own as long as `docmap` is on `PATH`.
+
+Without the plugin, one line in your global `~/.claude/CLAUDE.md` gets every agent most of the way: `Before Read on any .md over 200 lines, run docmap <file> and read only the section you need.`
+
 Update later with `/plugin marketplace update`.
 
 ### Option B — Personal user skill
