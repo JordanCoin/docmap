@@ -1,6 +1,7 @@
 package docset
 
 import (
+	"bytes"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -58,11 +59,60 @@ func gitTrackedSet(dir string) map[string]bool {
 	return set
 }
 
-// LoadDir walks dir for markdown, PDF and YAML documents. Unless all is true
-// it skips dependency directories and honors .gitignore.
+// maxWalkTextSize is the largest .txt a directory walk parses. Bigger text
+// files are logs and data dumps far more often than documents.
+const maxWalkTextSize = 1 << 20
+
+// nonDocText are .txt names that are machine input, not documents.
+var nonDocText = map[string]bool{
+	"cmakelists.txt": true, "robots.txt": true,
+	// Python packaging metadata (*.egg-info)
+	"top_level.txt": true, "sources.txt": true, "entry_points.txt": true,
+	"dependency_links.txt": true, "requires.txt": true,
+}
+
+// walkableText decides whether a directory walk should parse the .txt file at
+// path. Dependency pins, build manifests, oversized files and binary data
+// wearing a .txt extension are left out. counted is true when the file was
+// left out for a reason worth reporting (name or size), so callers can say
+// how many were skipped instead of dropping them silently (#32).
+func walkableText(path string, all bool) (ok, counted bool) {
+	name := strings.ToLower(filepath.Base(path))
+	if !all && (nonDocText[name] || strings.HasPrefix(name, "requirements") || strings.HasPrefix(name, "constraints")) {
+		return false, true
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, false
+	}
+	if !all && info.Size() > maxWalkTextSize {
+		return false, true
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false, false
+	}
+	defer f.Close()
+	head := make([]byte, 8192)
+	n, _ := f.Read(head)
+	if bytes.IndexByte(head[:n], 0) >= 0 {
+		return false, false
+	}
+	return true, false
+}
+
+// LoadDir walks dir for markdown, PDF, plain-text and YAML documents. Unless
+// all is true it skips dependency directories and honors .gitignore.
 // Collection uses charlievieth/fastwalk (parallel WalkDir); parsing uses a
 // worker pool bounded by GOMAXPROCS. Results are sorted by Filename.
 func LoadDir(dir string, all bool) []*parser.Document {
+	docs, _ := loadDir(dir, all, true)
+	return docs
+}
+
+// LoadDirSkipped is LoadDir plus the number of .txt files the walk left out
+// by name or size (see walkableText).
+func LoadDirSkipped(dir string, all bool) ([]*parser.Document, int) {
 	return loadDir(dir, all, true)
 }
 
@@ -70,18 +120,20 @@ func LoadDir(dir string, all bool) []*parser.Document {
 // CI, not documentation: gumroad has 3,514 spec/support YAML files that would
 // otherwise count as docs. Explicit YAML paths and --all still load it.
 func LoadDocs(dir string, all bool) []*parser.Document {
-	return loadDir(dir, all, all)
+	docs, _ := loadDir(dir, all, all)
+	return docs
 }
 
-func loadDir(dir string, all, yaml bool) []*parser.Document {
+func loadDir(dir string, all, yaml bool) ([]*parser.Document, int) {
 	var tracked map[string]bool
 	if !all {
 		tracked = gitTrackedSet(dir)
 	}
 
 	var (
-		pathMu sync.Mutex
-		paths  []string
+		pathMu  sync.Mutex
+		paths   []string
+		skipped int
 	)
 
 	_ = fastwalk.Walk(nil, dir, func(path string, d fs.DirEntry, err error) error {
@@ -99,7 +151,8 @@ func loadDir(dir string, all, yaml bool) []*parser.Document {
 		isMd := strings.HasSuffix(lowerPath, ".md")
 		isPdf := strings.HasSuffix(lowerPath, ".pdf")
 		isYaml := strings.HasSuffix(lowerPath, ".yaml") || strings.HasSuffix(lowerPath, ".yml")
-		if !isMd && !isPdf && !(yaml && isYaml) {
+		isTxt := strings.HasSuffix(lowerPath, ".txt")
+		if !isMd && !isPdf && !isTxt && !(yaml && isYaml) {
 			return nil
 		}
 
@@ -110,6 +163,18 @@ func loadDir(dir string, all, yaml bool) []*parser.Document {
 		if tracked != nil {
 			rel, relErr := filepath.Rel(dir, path)
 			if relErr == nil && !tracked[filepath.ToSlash(rel)] {
+				return nil
+			}
+		}
+
+		if isTxt {
+			ok, counted := walkableText(path, all)
+			if !ok {
+				if counted {
+					pathMu.Lock()
+					skipped++
+					pathMu.Unlock()
+				}
 				return nil
 			}
 		}
@@ -164,7 +229,7 @@ func loadDir(dir string, all, yaml bool) []*parser.Document {
 	sort.Slice(docs, func(i, j int) bool {
 		return docs[i].Filename < docs[j].Filename
 	})
-	return docs
+	return docs, skipped
 }
 
 // LoadPath loads a single file or directory of docs. For directories, Filename

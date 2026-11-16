@@ -120,19 +120,25 @@ func hookSessionStart(root string) string {
 	if len(docs) == 0 {
 		return ""
 	}
-	md, pdf, sections, tokens := 0, 0, 0, 0
+	md, pdf, txt, sections, tokens := 0, 0, 0, 0, 0
 	for _, d := range docs {
 		switch strings.ToLower(filepath.Ext(d.Filename)) {
 		case ".md":
 			md++
 		case ".pdf":
 			pdf++
+		case ".txt":
+			txt++
 		}
 		sections += len(d.GetAllSections())
 		tokens += d.TotalTokens
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "📚 Docs: %d md, %d pdf · %d sections · ~%s tokens\n", md, pdf, sections, briefTokens(tokens))
+	kinds := fmt.Sprintf("%d md, %d pdf", md, pdf)
+	if txt > 0 {
+		kinds += fmt.Sprintf(", %d txt", txt)
+	}
+	fmt.Fprintf(&b, "📚 Docs: %s · %d sections · ~%s tokens\n", kinds, sections, briefTokens(tokens))
 	if recent := recentDocs(root, docs, sessionStartLimit); len(recent) > 0 {
 		fmt.Fprintf(&b, "recent docs: %s\n", strings.Join(recent, ", "))
 	}

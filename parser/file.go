@@ -49,6 +49,8 @@ func ParseFile(path string) (*Document, error) {
 		if err != nil {
 			return nil, err
 		}
+	} else if strings.HasSuffix(lower, ".txt") {
+		doc = ParseText(string(content))
 	} else {
 		doc = Parse(string(content))
 	}
