@@ -283,7 +283,23 @@ Local checks (zero network): missing backticked paths, binaries not on `PATH`, s
 
 ### PDF support
 
-PDFs with outlines show document structure; tokens are estimated. PDFs without outlines fall back to page-by-page. Scanned/image-only PDFs show a page count but no text.
+PDFs with outlines show document structure, with each bookmark anchored to the text layer. PDFs without outlines fall back to page-by-page. Either way `--expand`, `--at` and `--search` work, with line numbers into the extracted text. Scanned/image-only PDFs show a page count but no text.
+
+docmap extracts the text itself, by position, so the output reads the way the page does:
+
+- **Words and lines.** Gaps between glyphs become spaces and baseline changes become line breaks. PDFs that space words by moving the pen (every TeX document) no longer come out as one run of letters.
+- **Ligatures.** `ﬁ`, `ﬂ`, `ﬃ` and glyphs named `f_i` or `T_h` come out as the letters you would search for, so `quantification` finds `quantiﬁcation`.
+- **No silent fusion.** A font's ToUnicode map is honoured first, Windows-1252 punctuation is decoded (`0.625–125`, never `0.625125`), and a glyph with no known Unicode value becomes `�` instead of vanishing.
+- **Exponents.** A raised or lowered number next to a digit keeps a marker: `1.58×10^7`, never `1.58×107`.
+- **Search sees through layout.** A phrase that straddles a line wrap matches, and so does a word hyphenated at a line end (`under-`/`mined` matches `undermined`). This applies to markdown and plain text too.
+
+To take the text from an extractor you already trust while keeping docmap's outline structure, name it in `DOCMAP_PDF_TEXT_CMD`. The command gets the PDF path in place of `{}` (or appended), writes plain text to stdout, and may separate pages with form feeds:
+
+```bash
+export DOCMAP_PDF_TEXT_CMD="pdftotext -layout {} -"
+```
+
+The value is split on whitespace and run directly, not through a shell. If the command fails, docmap says so on stderr and uses its own extractor.
 
 ### Plain-text support
 
@@ -346,7 +362,7 @@ Together: complete spatial awareness of any repository.
 
 **Markdown:** parsed with [goldmark](https://github.com/yuin/goldmark) (CommonMark + GFM extensions) plus post-passes for math blocks, GFM callouts, Obsidian wiki links, HTML entities, `@mentions`, `#issue` refs, commit SHAs, and emoji shortcodes. The result is a typed AST with 40+ node kinds that the renderer compresses into the dense tree view.
 
-**PDF:** outline/bookmarks parsed by `ledongthuc/pdf`, falling back to per-page structure if no outline exists.
+**PDF:** outline/bookmarks and the content-stream lexer come from `ledongthuc/pdf`; text decoding and layout are docmap's own (`parser/pdftext.go`). Falls back to per-page structure if no outline exists.
 
 **YAML:** parsed by `yaml.v3` with keys mapped to sections.
 

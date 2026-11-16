@@ -1250,7 +1250,7 @@ func SearchResults(docs []*parser.Document, query string) {
 func searchSections(filename string, sections []*parser.Section, parentPath string, query string, results *[]SearchResult) {
 	for _, s := range sections {
 		match := strings.Contains(strings.ToLower(s.Title), query) ||
-			strings.Contains(strings.ToLower(s.Content), query) ||
+			parser.ContainsText(s.Content, query) ||
 			notablesMatch(s, query)
 
 		if match {

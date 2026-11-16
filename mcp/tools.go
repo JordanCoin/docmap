@@ -357,7 +357,7 @@ func sectionBreadcrumb(s *parser.Section) string {
 }
 
 func sectionMatches(sec *parser.Section, needle string) bool {
-	if strings.Contains(strings.ToLower(sec.Title), needle) || strings.Contains(strings.ToLower(sec.Content), needle) {
+	if strings.Contains(strings.ToLower(sec.Title), needle) || parser.ContainsText(sec.Content, needle) {
 		return true
 	}
 	for _, t := range sec.KeyTerms {

@@ -3,13 +3,19 @@ package parser
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/ledongthuc/pdf"
 )
 
-// ParsePDF parses a PDF file into a Document structure
+// ParsePDF parses a PDF file into a Document structure. Outlined PDFs get
+// their bookmark tree anchored to the text layer; PDFs without an outline get
+// one section per page. Either way doc.Source holds the extracted text and
+// section line numbers index into it, so --expand, --at and --search work.
 func ParsePDF(filepath string) (*Document, error) {
 	f, r, err := pdf.Open(filepath)
 	if err != nil {
@@ -18,12 +24,13 @@ func ParsePDF(filepath string) (*Document, error) {
 	defer f.Close()
 
 	doc := &Document{}
+	pages := pdfPageTexts(filepath, r)
 
 	// Try to extract outline (bookmarks) first
 	outline := r.Outline()
 	if hasOutline(outline) {
 		doc.Sections = parseOutline(outline)
-		text := extractText(r)
+		text := joinPages(pages)
 		if !anchorSections(doc, text) {
 			// Too few titles found in the text layer (scanned PDF, or an
 			// outline that does not match the body): keep the tree, estimate tokens.
@@ -31,7 +38,7 @@ func ParsePDF(filepath string) (*Document, error) {
 		}
 	} else {
 		// Fall back to page-based structure
-		doc.Sections = parseByPage(r)
+		doc.Sections, doc.Source = pageSections(pages)
 	}
 
 	// Calculate total tokens
@@ -40,6 +47,82 @@ func ParsePDF(filepath string) (*Document, error) {
 	}
 
 	return doc, nil
+}
+
+// PDFTextCommandEnv names an external text extractor. When set, its value is
+// a command line that receives the PDF path (substituted for "{}", or
+// appended when there is no "{}") and writes plain text to stdout, with a
+// form feed between pages if it wants page structure preserved:
+//
+//	DOCMAP_PDF_TEXT_CMD="pdftotext -layout {} -"
+//
+// docmap keeps its own outline structure and anchors it to that text (#34).
+// The value is split on whitespace and run directly, never through a shell.
+// If the command fails, docmap says so on stderr and uses its built-in
+// extractor.
+const PDFTextCommandEnv = "DOCMAP_PDF_TEXT_CMD"
+
+var warnExternalOnce sync.Once
+
+// pdfPageTexts returns the text of every page, index 0 being page 1.
+func pdfPageTexts(path string, r *pdf.Reader) []string {
+	if cmdline := strings.Fields(os.Getenv(PDFTextCommandEnv)); len(cmdline) > 0 {
+		pages, err := externalPageTexts(cmdline, path)
+		if err == nil {
+			return pages
+		}
+		warnExternalOnce.Do(func() {
+			fmt.Fprintf(os.Stderr, "docmap: %s failed (%v); using the built-in PDF text extractor\n", PDFTextCommandEnv, err)
+		})
+	}
+	pages := make([]string, r.NumPage())
+	for i := range pages {
+		pages[i] = pageText(r.Page(i + 1))
+	}
+	return pages
+}
+
+func externalPageTexts(cmdline []string, path string) ([]string, error) {
+	args := make([]string, 0, len(cmdline))
+	substituted := false
+	for _, a := range cmdline[1:] {
+		if strings.Contains(a, "{}") {
+			a = strings.ReplaceAll(a, "{}", path)
+			substituted = true
+		}
+		args = append(args, a)
+	}
+	if !substituted {
+		args = append(args, path)
+	}
+	out, err := exec.Command(cmdline[0], args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	text := strings.ToValidUTF8(strings.ReplaceAll(string(out), "\r\n", "\n"), replacement)
+	pages := strings.Split(text, "\f")
+	for i, p := range pages {
+		pages[i] = strings.Trim(p, "\n")
+	}
+	if n := len(pages); n > 1 && pages[n-1] == "" {
+		pages = pages[:n-1]
+	}
+	return pages, nil
+}
+
+// joinPages concatenates page texts, one page per line at minimum.
+func joinPages(pages []string) string {
+	var b strings.Builder
+	for _, text := range pages {
+		if text == "" {
+			continue
+		}
+		b.WriteString(text)
+		if !strings.HasSuffix(text, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // hasOutline checks if the PDF has a meaningful outline structure
@@ -74,27 +157,6 @@ func outlineItemToSection(item pdf.Outline, level int) *Section {
 	}
 
 	return section
-}
-
-// extractText concatenates the plain text of every page, one page per line
-// at minimum. Pages that fail to decode are skipped.
-func extractText(r *pdf.Reader) string {
-	var b strings.Builder
-	for i := 1; i <= r.NumPage(); i++ {
-		page := r.Page(i)
-		if page.V.IsNull() {
-			continue
-		}
-		text, err := page.GetPlainText(nil)
-		if err != nil || text == "" {
-			continue
-		}
-		b.WriteString(text)
-		if !strings.HasSuffix(text, "\n") {
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
 }
 
 // distinctiveTitleLen is the normalized length above which a title is
@@ -432,55 +494,48 @@ func distributeTokens(section *Section, tokens int) {
 	calculateCumulativeTokens(section)
 }
 
-// parseByPage creates a page-based structure for PDFs without outlines
-func parseByPage(r *pdf.Reader) []*Section {
-	numPages := r.NumPage()
-	if numPages == 0 {
-		return nil
+// pageSections builds the page-by-page structure for PDFs without an
+// outline. It returns the sections and the source text they index into: page
+// texts joined by a blank line, with each section's LineStart and LineEnd
+// pointing at its page's lines.
+func pageSections(pages []string) ([]*Section, string) {
+	if len(pages) == 0 {
+		return nil, ""
 	}
-
 	var sections []*Section
-	var hasContent bool
-
-	for i := 1; i <= numPages; i++ {
-		page := r.Page(i)
-		if page.V.IsNull() {
-			continue
-		}
-
-		text, err := page.GetPlainText(nil)
-		if err != nil {
-			continue
-		}
-
+	var src strings.Builder
+	line := 1
+	for i, text := range pages {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
 		}
-
-		hasContent = true
-		section := &Section{
+		if src.Len() > 0 {
+			src.WriteString("\n")
+			line++
+		}
+		n := strings.Count(text, "\n") + 1
+		sections = append(sections, &Section{
 			Level:     1,
-			Title:     fmt.Sprintf("Page %d", i),
+			Title:     fmt.Sprintf("Page %d", i+1),
 			Content:   text,
 			Tokens:    estimateTokens(text),
-			LineStart: i, // Page number
-			LineEnd:   i,
-		}
-		sections = append(sections, section)
+			LineStart: line,
+			LineEnd:   line + n - 1,
+		})
+		src.WriteString(text)
+		src.WriteString("\n")
+		line += n
 	}
 
 	// If no text content was extracted, return a warning section
-	if !hasContent && numPages > 0 {
+	if len(sections) == 0 {
 		return []*Section{{
 			Level:     1,
-			Title:     fmt.Sprintf("(%d pages - no extractable text)", numPages),
-			Content:   "",
-			Tokens:    0,
+			Title:     fmt.Sprintf("(%d pages - no extractable text)", len(pages)),
 			LineStart: 1,
-			LineEnd:   numPages,
-		}}
+			LineEnd:   len(pages),
+		}}, ""
 	}
-
-	return sections
+	return sections, src.String()
 }
