@@ -1065,8 +1065,10 @@ Flags:
 Multiple positional paths are supported for search only; plain tree mode takes one path.
 
 PDF Support:
-  PDFs with outlines show document structure; tokens are estimated.
+  PDFs with outlines show document structure anchored to the text layer.
   PDFs without outlines fall back to page-by-page structure.
+  Set DOCMAP_PDF_TEXT_CMD="pdftotext -layout {} -" to take the text from an
+  external extractor while keeping docmap's outline structure.
 
 Text Support:
   .txt files with markdown headings parse as markdown. Otherwise structure
