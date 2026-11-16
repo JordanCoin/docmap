@@ -37,7 +37,7 @@ func loadPath(path string) (*loaded, error) {
 	if info.IsDir() {
 		docs := docset.LoadDir(abs, false)
 		if len(docs) == 0 {
-			return nil, fmt.Errorf("no markdown, PDF, or YAML files found in %s", abs)
+			return nil, fmt.Errorf("no markdown, PDF, text, or YAML files found in %s", abs)
 		}
 		return &loaded{Root: abs, Docs: docs}, nil
 	}

@@ -1,6 +1,6 @@
 ---
 name: docmap
-description: Navigate markdown, PDF, and YAML documentation structure without reading full files. Use before opening any large .md file, to locate specific constructs (code blocks, callouts, tables), to jump to a line number's context, or to see what changed in docs since a git ref.
+description: Navigate markdown, PDF, plain-text, and YAML documentation structure without reading full files. Use before opening any large .md file, to locate specific constructs (code blocks, callouts, tables), to jump to a line number's context, or to see what changed in docs since a git ref.
 ---
 
 # docmap skill

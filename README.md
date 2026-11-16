@@ -143,6 +143,7 @@ Read the shipped SKILL.md on GitHub before installing: [plugins/docmap/skills/do
 docmap .                            # Map everything in a directory
 docmap README.md                    # Deep dive single file
 docmap report.pdf                   # PDF document structure
+docmap notes.txt                    # Plain-text structure (inferred headings or pages)
 docmap config.yaml                  # YAML file structure
 
 docmap README.md --section "API"    # Filter to section
@@ -283,6 +284,10 @@ Local checks (zero network): missing backticked paths, binaries not on `PATH`, s
 ### PDF support
 
 PDFs with outlines show document structure; tokens are estimated. PDFs without outlines fall back to page-by-page. Scanned/image-only PDFs show a page count but no text.
+
+### Plain-text support
+
+`.txt` files are documents too, in single-file mode and in directory walks. A `.txt` with markdown headings parses as markdown. Otherwise structure is inferred from underlined titles, numbered (`2.3 Methods`) or ALL-CAPS headings, then form-feed page breaks (what `pdftotext` emits); a file with none of those is one `(full text)` section, so it still counts in the inventory and answers `--search`, `--expand` and `--at`. Directory walks leave out dependency lists and build files (`requirements*.txt`, `CMakeLists.txt`) and anything over 1 MB, and say how many were skipped; `--all` includes them.
 
 ### YAML support
 

@@ -279,7 +279,7 @@ func main() {
 		// Parse the temp directory
 		docs := docset.LoadDir(tmpDir, false)
 		if len(docs) == 0 {
-			fmt.Println("No markdown, PDF, or YAML files found")
+			fmt.Println("No markdown, PDF, text, or YAML files found")
 			os.Exit(1)
 		}
 
@@ -311,7 +311,7 @@ func main() {
 			docs = append(docs, parsed...)
 		}
 		if len(docs) == 0 {
-			fmt.Println("No markdown, PDF, or YAML files found")
+			fmt.Println("No markdown, PDF, text, or YAML files found")
 			os.Exit(1)
 		}
 		outputSearch(docs, terms, jsonMode, compact)
@@ -339,10 +339,14 @@ func main() {
 		if (staleMode && !brief) || mentionsFlag {
 			docs = docset.LoadDocs(target, walkAll)
 		} else {
-			docs = docset.LoadDir(target, walkAll)
+			var skipped int
+			docs, skipped = docset.LoadDirSkipped(target, walkAll)
+			if skipped > 0 && !jsonMode {
+				fmt.Fprintf(os.Stderr, "note: skipped %d .txt file%s (dependency lists, build files, or over 1 MB); --all includes them\n", skipped, pluralClaims(skipped))
+			}
 		}
 		if len(docs) == 0 {
-			fmt.Println("No markdown, PDF, or YAML files found")
+			fmt.Println("No markdown, PDF, text, or YAML files found")
 			os.Exit(1)
 		}
 		if len(terms) > 0 {
@@ -663,7 +667,7 @@ func collectMentions(docs []*parser.Document, paths []string) []string {
 			// sections carry their whole subtree at every level, so the top
 			// level alone sees every byte once and still names the section.
 			secs := doc.GetAllSections()
-			if !strings.HasSuffix(strings.ToLower(doc.Filename), ".md") {
+			if lower := strings.ToLower(doc.Filename); docset.IsYAML(lower) || strings.HasSuffix(lower, ".pdf") {
 				secs = doc.Sections
 			}
 			for _, sec := range secs {
@@ -1000,13 +1004,13 @@ func printUsage() {
 	fmt.Println(`docmap - instant documentation structure for LLMs and humans
 
 Usage:
-  docmap <file.md|file.pdf|file.yaml|dir> [flags]
+  docmap <file.md|file.pdf|file.txt|file.yaml|dir> [flags]
   docmap <dirA> <dirB> (--search <query> | --terms-file <path>) [flags]
   docmap --stdin [flags] < manifest.json
   docmap mcp                         # stdio MCP server
 
 Examples:
-  docmap .                          # All markdown, PDF, and YAML files
+  docmap .                          # All markdown, PDF, text, and YAML files
   docmap README.md                  # Single markdown file deep dive
   docmap report.pdf                 # Single PDF file structure
   docmap config.yaml                # Single YAML file structure
@@ -1063,6 +1067,12 @@ Multiple positional paths are supported for search only; plain tree mode takes o
 PDF Support:
   PDFs with outlines show document structure; tokens are estimated.
   PDFs without outlines fall back to page-by-page structure.
+
+Text Support:
+  .txt files with markdown headings parse as markdown. Otherwise structure
+  comes from underlined titles, numbered or ALL-CAPS headings, then form-feed
+  page breaks; a file with none of those is one section. Directory walks skip
+  dependency lists (requirements*.txt, CMakeLists.txt) and files over 1 MB.
 
 YAML Support:
   Maps keys to sections with nested children. Sequences use name/id/title
