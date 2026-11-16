@@ -3,8 +3,13 @@ package render
 import (
 	"fmt"
 	"os"
+	"path"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/JordanCoin/docmap/parser"
 	"github.com/mattn/go-runewidth"
@@ -505,6 +510,39 @@ func TypeFilterFiltered(doc *parser.Document, kindName, lang, variant string) {
 		fmt.Printf("Unknown type %q. Try: code, callout, table, math, footnote, deflist, linkref, html, task, wiki, embed, mention, issue, sha, emoji\n", kindName)
 		return
 	}
+	typeFilterDoc(doc, kind, lang, variant, false)
+}
+
+// TypeFilterDocs is TypeFilterFiltered across a directory: every document
+// that has the construct, skipping the ones that do not, then a total.
+// "Where are the bash examples in these docs" is a directory question.
+func TypeFilterDocs(docs []*parser.Document, kindName, lang, variant string) {
+	kind, ok := resolveKindName(kindName)
+	if !ok {
+		fmt.Printf("Unknown type %q. Try: code, callout, table, math, footnote, deflist, linkref, html, task, wiki, embed, mention, issue, sha, emoji\n", kindName)
+		return
+	}
+	total, files := 0, 0
+	for _, doc := range docs {
+		if n := typeFilterDoc(doc, kind, lang, variant, true); n > 0 {
+			total += n
+			files++
+		}
+	}
+	label := kindDisplayName(kind)
+	if total == 0 {
+		fmt.Printf("No %s found in %d files.\n", label, len(docs))
+		return
+	}
+	if total == 1 {
+		label = strings.TrimSuffix(label, "s")
+	}
+	fmt.Printf("%s%d %s in %d of %d files%s\n", dim, total, label, files, len(docs), reset)
+}
+
+// typeFilterDoc renders one document's constructs of kind and returns how
+// many there are. With skipEmpty, a document with none prints nothing.
+func typeFilterDoc(doc *parser.Document, kind parser.NodeKind, lang, variant string, skipEmpty bool) int {
 
 	// Walk every section and collect matching nodes along with their
 	// section breadcrumb.
@@ -561,13 +599,16 @@ func TypeFilterFiltered(doc *parser.Document, kindName, lang, variant string) {
 	for _, h := range hits {
 		total += len(h.nodes) + h.count
 	}
+	if total == 0 && skipEmpty {
+		return 0
+	}
 	label := kindDisplayName(kind)
 	info := fmt.Sprintf("%d %s in %d section%s", total, label, len(hits), pluralS(len(hits)))
 	printMiniHeader(doc.Filename+" — "+label, info)
 
 	if len(hits) == 0 {
 		fmt.Printf("No %s found.\n\n", label)
-		return
+		return 0
 	}
 
 	for _, h := range hits {
@@ -586,6 +627,7 @@ func TypeFilterFiltered(doc *parser.Document, kindName, lang, variant string) {
 		}
 		fmt.Println()
 	}
+	return total
 }
 
 // matchesSubFilter checks optional --lang / --kind sub-filters against a
@@ -697,10 +739,22 @@ func formatTypeHit(kind parser.NodeKind, n parser.Node) string {
 				lang = "(indent)"
 			}
 		}
-		if v.LineEnd() > v.LineStart() {
-			return fmt.Sprintf(":%d-%d  %-10s", v.LineStart(), v.LineEnd(), lang)
+		// The first line of code says which block this is; a list of
+		// identical "bash" rows does not.
+		first := ""
+		for _, l := range strings.Split(v.Code, "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				first = l
+				break
+			}
 		}
-		return fmt.Sprintf(":%d     %-10s", v.LineStart(), lang)
+		if r := []rune(first); len(r) > 72 {
+			first = string(r[:71]) + "…"
+		}
+		if v.LineEnd() > v.LineStart() {
+			return strings.TrimRight(fmt.Sprintf(":%d-%d  %-10s  %s", v.LineStart(), v.LineEnd(), lang, first), " ")
+		}
+		return strings.TrimRight(fmt.Sprintf(":%d     %-10s  %s", v.LineStart(), lang, first), " ")
 	case *parser.Callout:
 		snippet := calloutSnippetText(v)
 		return fmt.Sprintf(":%-4d  %-10s  %s", v.LineStart(), v.Variant, snippet)
@@ -821,7 +875,11 @@ func AtLine(doc *parser.Document, line int) {
 	if found != nil {
 		fmt.Printf("%sNode:   %s %s\n", bold, reset, detailForNode(found))
 	} else {
-		fmt.Println("No matching node.")
+		if text := strings.TrimSpace(doc.SourceSpan(line, line)); text != "" {
+			fmt.Printf("%d: %s\n", line, text)
+		} else {
+			fmt.Println("No matching node.")
+		}
 	}
 	fmt.Println()
 }
@@ -990,35 +1048,107 @@ func lineBelongsToDeeperSection(line int, children []*parser.Section) bool {
 	return false
 }
 
-// FilteredTree shows only sections matching the filter
-func FilteredTree(doc *parser.Document, filter string) {
-	section := doc.GetSection(filter)
-	if section == nil {
-		fmt.Printf("Section '%s' not found\n", filter)
+// SectionNotFound prints the not-found line plus the closest titles, so the
+// next attempt does not have to start with a full tree.
+func SectionNotFound(docs []*parser.Document, name string) {
+	fmt.Printf("Section '%s' not found\n", name)
+	var near []string
+	for _, doc := range docs {
+		for _, t := range doc.SuggestSections(name, 6-len(near)) {
+			if len(docs) > 1 {
+				t = doc.Filename + " > " + t
+			}
+			near = append(near, t)
+		}
+		if len(near) >= 6 {
+			break
+		}
+	}
+	if len(near) == 0 && len(docs) == 1 {
+		// Nothing close: show the top of the outline. A lone H1 is the
+		// document title, so its children are the useful level.
+		top := docs[0].Sections
+		if len(top) == 1 && len(top[0].Children) > 0 {
+			top = top[0].Children
+		}
+		for _, s := range top {
+			if len(near) < 8 {
+				near = append(near, s.Title)
+			}
+		}
+		if len(near) > 0 {
+			fmt.Println("sections here:")
+		}
+	} else if len(near) > 0 {
+		fmt.Println("closest:")
+	}
+	for _, t := range near {
+		fmt.Printf("  %s\n", t)
+	}
+}
+
+// noteOtherMatches tells the reader, on stderr, when name was ambiguous and
+// which other sections it could have meant.
+func noteOtherMatches(doc *parser.Document, name string, found []*parser.Section) {
+	if len(found) < 2 || strings.EqualFold(strings.TrimSpace(found[0].Title), strings.TrimSpace(name)) &&
+		!strings.EqualFold(strings.TrimSpace(found[1].Title), strings.TrimSpace(name)) {
 		return
 	}
+	var others []string
+	for _, s := range found[1:] {
+		if len(others) == 4 {
+			others = append(others, fmt.Sprintf("… %d more", len(found)-5))
+			break
+		}
+		others = append(others, fmt.Sprintf("%s (:%d)", breadcrumb(s), s.LineStart))
+	}
+	fmt.Fprintf(os.Stderr, "note: '%s' also matches in %s: %s. Use the full title or \"Parent > Child\".\n",
+		name, doc.Filename, strings.Join(others, "; "))
+}
 
-	// Print mini header
-	fmt.Printf("%s╭── %s%s%s (%s tokens)%s\n", dim, reset, bold+cyan, section.Title, formatTokens(section.Tokens), reset)
+// FilteredTree shows only sections matching the filter
+func FilteredTree(doc *parser.Document, filter string) {
+	found := doc.FindSections(filter)
+	if len(found) == 0 {
+		SectionNotFound([]*parser.Document{doc}, filter)
+		return
+	}
+	section := found[0]
+
+	// Print mini header: title, size, where it is and what it holds.
+	loc := ""
+	if section.LineStart > 0 {
+		loc = fmt.Sprintf(" %s:%d-%d", doc.Filename, section.LineStart, section.LineEnd)
+	}
+	notes := notableAnnotation(section)
+	if notes != "" {
+		notes = " · " + notes
+	}
+	fmt.Printf("%s╭── %s%s%s (%s tokens)%s%s%s\n", dim, reset, bold+cyan, section.Title, formatTokens(section.Tokens), loc, notes, reset)
 
 	// Print children
 	for i, child := range section.Children {
 		isLast := i == len(section.Children)-1
 		renderSection(child, "", isLast, true)
 	}
+	if len(section.Children) == 0 {
+		fmt.Printf("%sno subsections; read it: docmap %s --expand %q%s\n", dim, doc.Filename, section.Title, reset)
+	}
 
 	fmt.Println()
+	noteOtherMatches(doc, filter, found)
 }
 
 // ExpandSection prints the original markdown for a named section, including
 // nested headings, with a file:line-range locator agents can jump to.
 func ExpandSection(doc *parser.Document, name string) {
-	section := doc.GetSection(name)
-	if section == nil {
-		fmt.Printf("Section '%s' not found\n", name)
+	found := doc.FindSections(name)
+	if len(found) == 0 {
+		SectionNotFound([]*parser.Document{doc}, name)
 		return
 	}
-	printSectionSource(doc, section)
+	printSectionSource(doc, found[0])
+	noteOtherMatches(doc, name, found)
 }
 
 func printSectionSource(doc *parser.Document, section *parser.Section) {
@@ -1178,27 +1308,71 @@ func renderDocSummary(doc *parser.Document, isLast bool) {
 	fmt.Printf("%s%s%s%s %s%s\n", dim, connector, reset, bold+green+doc.Filename+reset, tokenStr, annotation)
 }
 
+// LineHit is one source line that matches a search query.
+type LineHit = parser.LineHit
+
 // SearchResult holds a matched section with its file context
 type SearchResult struct {
-	Filename string
-	Path     string // e.g. "endpoints > Ban Member"
-	Section  *parser.Section
+	Filename   string
+	Path       string // e.g. "endpoints > Ban Member"
+	Section    *parser.Section
+	TitleMatch bool
+	// WholeWord is true when the query matched as a word of its own, not
+	// only inside a longer one ("hub" in "github").
+	WholeWord bool
+	// Hits are the matching lines among the section's own lines (not its
+	// subsections'), in order. Count is how many there are; Hits holds at
+	// most maxHitsPerSection of them. Both are empty when the section
+	// matched only by title or by a typed construct (a code language, a
+	// callout kind), or when the document has no line-addressable source.
+	Hits  []LineHit
+	Count int
 }
 
+const (
+	// maxSearchSections bounds the rendered result list. A query that hits
+	// more sections than this is too broad to read; the count says so.
+	maxSearchSections = 25
+)
+
 // FindSearchResults returns sections matching query using the same title,
-// content, and typed-AST matching as the human renderer.
+// content, and typed-AST matching as the human renderer, in document order.
 func FindSearchResults(docs []*parser.Document, query string) []SearchResult {
 	var results []SearchResult
 	query = strings.ToLower(query)
 	for _, doc := range docs {
-		searchSections(doc.Filename, doc.Sections, "", query, &results)
+		searchSections(doc, doc.Sections, "", query, &results)
 	}
 	return results
 }
 
-// SearchResults searches all docs for sections matching the query and renders results
+// RankSearchResults orders results by usefulness: sections whose title
+// matches first, then whole-word matches before matches inside a longer
+// word, then by number of matching lines, keeping document order among
+// equals.
+func RankSearchResults(results []SearchResult) []SearchResult {
+	ranked := append([]SearchResult(nil), results...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].TitleMatch != ranked[j].TitleMatch {
+			return ranked[i].TitleMatch
+		}
+		if ranked[i].WholeWord != ranked[j].WholeWord {
+			return ranked[i].WholeWord
+		}
+		return ranked[i].Count > ranked[j].Count
+	})
+	return ranked
+}
+
+// SearchResults searches all docs for sections matching the query and
+// renders them best first, each with the lines that matched:
+//
+//	docs/HOOKS.md > Hooks > Why This Matters (93)
+//	  :41  files imported by 3+ others are hub files
+//
+// so the reader can jump to file:line without expanding the section first.
 func SearchResults(docs []*parser.Document, query string) {
-	results := FindSearchResults(docs, query)
+	results := RankSearchResults(FindSearchResults(docs, query))
 	query = strings.ToLower(query)
 
 	if len(results) == 0 {
@@ -1206,58 +1380,89 @@ func SearchResults(docs []*parser.Document, query string) {
 		return
 	}
 
-	// Header
-	fmt.Printf("%s%d matches for '%s'%s\n\n", bold, len(results), query, reset)
+	files := map[string]bool{}
+	lines := 0
+	for _, r := range results {
+		files[r.Filename] = true
+		lines += r.Count
+	}
+	header := fmt.Sprintf("%d sections match '%s'", len(results), query)
+	if len(results) == 1 {
+		header = fmt.Sprintf("1 section matches '%s'", query)
+	}
+	if lines > 0 {
+		header += fmt.Sprintf(" · %d line%s", lines, pluralS(lines))
+	}
+	if len(files) > 1 {
+		header += fmt.Sprintf(" · %d files", len(files))
+	}
+	fmt.Printf("%s%s%s\n\n", bold, header, reset)
 
-	for i, r := range results {
-		isLast := i == len(results)-1
-		connector := "├── "
-		if isLast {
-			connector = "└── "
-		}
-
-		tokenStr := dim + fmt.Sprintf("(%s)", formatTokens(r.Section.Tokens)) + reset
-		filePart := dim + r.Filename + " > " + reset
+	shown := results
+	if len(shown) > maxSearchSections {
+		shown = shown[:maxSearchSections]
+	}
+	for _, r := range shown {
+		where := r.Filename + " > "
 		if r.Path != "" {
-			filePart = dim + r.Filename + " > " + r.Path + " > " + reset
+			where += r.Path + " > "
 		}
-		fmt.Printf("%s%s%s%s%s%s %s\n", dim, connector, reset, filePart, bold+cyan+r.Section.Title+reset, "", tokenStr)
-
-		// Show children summary if present
-		if len(r.Section.Children) > 0 {
-			childPrefix := "│   "
-			if isLast {
-				childPrefix = "    "
-			}
-			for j, child := range r.Section.Children {
-				if j >= 5 {
-					fmt.Printf("%s%s... %d more%s\n", childPrefix, dim, len(r.Section.Children)-5, reset)
-					break
-				}
-				childIsLast := j == len(r.Section.Children)-1 || j == 4
-				childConn := "├─ "
-				if childIsLast {
-					childConn = "└─ "
-				}
-				fmt.Printf("%s%s%s%s %s\n", childPrefix, dim, childConn, child.Title+reset, dim+fmt.Sprintf("(%s)", formatTokens(child.Tokens))+reset)
-			}
+		loc := ""
+		if r.Section.LineStart > 0 && len(r.Hits) == 0 {
+			loc = fmt.Sprintf(" :%d", r.Section.LineStart)
+		}
+		fmt.Printf("%s%s%s%s%s%s %s(%s)%s\n", dim, where, reset, bold+cyan, r.Section.Title, reset,
+			dim, formatTokens(r.Section.Tokens), loc+reset)
+		for _, h := range r.Hits {
+			fmt.Printf("  %s:%d%s  %s\n", dim, h.Line, reset, h.Text)
+		}
+		if extra := r.Count - len(r.Hits); extra > 0 {
+			fmt.Printf("  %s… %d more line%s%s\n", dim, extra, pluralS(extra), reset)
 		}
 	}
-
+	if extra := len(results) - len(shown); extra > 0 {
+		fmt.Printf("\n%s… %d more sections. Narrow the query or path, or list them all with --compact%s\n", dim, extra, reset)
+	}
 	fmt.Println()
 }
 
-func searchSections(filename string, sections []*parser.Section, parentPath string, query string, results *[]SearchResult) {
-	for _, s := range sections {
-		match := strings.Contains(strings.ToLower(s.Title), query) ||
-			parser.ContainsText(s.Content, query) ||
-			notablesMatch(s, query)
+// hasWholeWord reports whether query occurs in text with no letter or digit
+// directly before or after it. Both must be lowercase.
+func hasWholeWord(text, query string) bool {
+	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+	for from := 0; from < len(text); {
+		i := strings.Index(text[from:], query)
+		if i < 0 {
+			return false
+		}
+		at := from + i
+		before, _ := utf8.DecodeLastRuneInString(text[:at])
+		after, _ := utf8.DecodeRuneInString(text[at+len(query):])
+		if (at == 0 || !isWord(before)) && (at+len(query) == len(text) || !isWord(after)) {
+			return true
+		}
+		from = at + 1
+	}
+	return false
+}
 
-		if match {
+func searchSections(doc *parser.Document, sections []*parser.Section, parentPath string, query string, results *[]SearchResult) {
+	for _, s := range sections {
+		titleMatch := strings.Contains(strings.ToLower(s.Title), query)
+		hits, count := parser.SectionLineHits(doc, s, query)
+		if titleMatch || count > 0 || parser.ContainsText(s.Content, query) || notablesMatch(s, query) {
+			whole := hasWholeWord(strings.ToLower(s.Title), query)
+			for _, h := range hits {
+				whole = whole || hasWholeWord(strings.ToLower(h.Text), query)
+			}
 			*results = append(*results, SearchResult{
-				Filename: filename,
-				Path:     parentPath,
-				Section:  s,
+				Filename:   doc.Filename,
+				Path:       parentPath,
+				Section:    s,
+				TitleMatch: titleMatch,
+				WholeWord:  whole,
+				Hits:       hits,
+				Count:      count,
 			})
 		}
 
@@ -1268,7 +1473,7 @@ func searchSections(filename string, sections []*parser.Section, parentPath stri
 		} else {
 			childPath = s.Title
 		}
-		searchSections(filename, s.Children, childPath, query, results)
+		searchSections(doc, s.Children, childPath, query, results)
 	}
 }
 
@@ -1323,6 +1528,21 @@ func notablesMatch(s *parser.Section, query string) bool {
 	return false
 }
 
+// resolveRefTarget turns a link target as written in the file from into a
+// path relative to the walked root, so "../README.md" linked from
+// docs/a.md and "README.md" linked from CONTRIBUTING.md are the same node.
+// Targets that leave the root, are absolute, or are URLs stay as written.
+func resolveRefTarget(from, target string) string {
+	if target == "" || strings.Contains(target, "://") || strings.HasPrefix(target, "/") {
+		return target
+	}
+	joined := path.Clean(path.Join(path.Dir(filepath.ToSlash(from)), filepath.ToSlash(target)))
+	if joined == ".." || strings.HasPrefix(joined, "../") {
+		return target
+	}
+	return joined
+}
+
 // RefsTree renders document references (links to other .md files)
 func RefsTree(docs []*parser.Document, dirName string) {
 	// Build reference graph
@@ -1339,14 +1559,15 @@ func RefsTree(docs []*parser.Document, dirName string) {
 
 	for _, doc := range docs {
 		for _, ref := range doc.References {
+			to := resolveRefTarget(doc.Filename, ref.Target)
 			allRefs = append(allRefs, RefInfo{
 				From: doc.Filename,
-				To:   ref.Target,
+				To:   to,
 				Text: ref.Text,
 				Line: ref.Line,
 			})
-			fileRefs[doc.Filename] = append(fileRefs[doc.Filename], ref.Target)
-			fileRefBy[ref.Target] = append(fileRefBy[ref.Target], doc.Filename)
+			fileRefs[doc.Filename] = append(fileRefs[doc.Filename], to)
+			fileRefBy[to] = append(fileRefBy[to], doc.Filename)
 		}
 	}
 

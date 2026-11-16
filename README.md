@@ -157,6 +157,7 @@ docmap file.md --type code          # List every code block
 docmap file.md --type code --lang python   # Only Python code blocks
 docmap file.md --type callout --kind warning  # Only warning callouts
 docmap file.md --type table         # Every table with its headers
+docmap docs/ --type code --lang bash  # Same, across a directory (skips files with none)
 
 docmap file.md --at 154             # What's at line 154?
 docmap file.md --since HEAD~5       # Constructs on lines changed since a git ref
@@ -178,9 +179,38 @@ When both `--search` and `--terms-file` are supplied, the
 explicit search query runs first, followed by terms in file order; blank lines
 and lines beginning with `#` are ignored.
 
-Use `--compact` for one `file > section` line per hit (with `## term` headings
-when multiple queries run). Add `--json` to get an array such as
-`[{"term":"auth","file":"api.md","section":"Authentication","tokens":42}]`.
+Search answers with the lines that matched, so you can go to `file:line`
+without expanding a section first:
+
+```
+$ docmap . --search "blast radius"
+7 sections match 'blast radius' · 7 lines · 7 files
+
+docs/COMMANDS.md > Commands > Modes > Blast radius (125)
+  :121  ### Blast radius
+README.md > codemap > What it's for (134)
+  :96  | **Blast radius** | Who breaks if you change this file. |
+docs/HOOKS.md > Codemap Hooks > Why This Matters (93)
+  :436  2. **Sees** the blast radius after making changes
+```
+
+Results are ranked: a title match first, then whole-word matches before
+matches inside a longer word (`hub` before `github`), then by number of
+matching lines. Each section shows its first three matching lines and a count
+of the rest; past 25 sections the list is cut with a count. A phrase that
+wraps across a line break, or a word hyphenated at a line end, still matches
+and is reported at the line where it starts.
+
+Use `--compact` for one `file > section` line per hit in document order (with
+`## term` headings when multiple queries run). Add `--json` to get an array
+such as
+`[{"term":"auth","file":"api.md","section":"Authentication","tokens":42,"line":12,"count":2,"hits":[{"line":14,"text":"…"}]}]`.
+
+`--section` and `--expand` take the best match for a name: an exact title,
+then a title that starts with it, then one that contains it. When the name is
+ambiguous the others are listed on stderr; pick one with its full title or a
+breadcrumb, `--expand "Appendix > Setup"`. When nothing matches, the closest
+titles are printed instead of a bare "not found".
 
 ## Output
 
@@ -283,7 +313,7 @@ Local checks (zero network): missing backticked paths, binaries not on `PATH`, s
 
 ### PDF support
 
-PDFs with outlines show document structure, with each bookmark anchored to the text layer. PDFs without outlines fall back to page-by-page. Either way `--expand`, `--at` and `--search` work, with line numbers into the extracted text. Scanned/image-only PDFs show a page count but no text.
+PDFs with outlines show document structure, with each bookmark anchored to the text layer. Anchoring follows the bookmark's own destination (page and position), so a section lands on its real heading rather than on the table-of-contents line, running header or figure label that repeats its title; outlines without destinations fall back to matching titles in the text. Parsed PDFs are cached like markdown, keyed on mtime and size. PDFs without outlines fall back to page-by-page. Either way `--expand`, `--at` and `--search` work, with line numbers into the extracted text. Scanned/image-only PDFs show a page count but no text.
 
 docmap extracts the text itself, by position, so the output reads the way the page does:
 

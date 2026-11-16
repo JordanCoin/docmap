@@ -380,10 +380,95 @@ func extractKeyTerms(content string) []string {
 	return terms
 }
 
-// GetSection finds a section by name (case-insensitive partial match)
+// GetSection finds the section that best matches name (case-insensitive).
+// See FindSections for what "best" means.
 func (d *Document) GetSection(name string) *Section {
-	name = strings.ToLower(name)
-	return findSection(d.Sections, name)
+	if found := d.FindSections(name); len(found) > 0 {
+		return found[0]
+	}
+	return nil
+}
+
+// FindSections returns every section matching name, best first: an exact
+// title, then a title that starts with name, then one that merely contains
+// it; document order within each rank. A first-substring match is the wrong
+// default when a paper titled "… Smudgeplot …" also has a section called
+// "Smudgeplot".
+//
+// name may be a breadcrumb, "Parent > Child": the last part is matched
+// against the title and the earlier parts, in order, against its ancestors.
+func (d *Document) FindSections(name string) []*Section {
+	parts := strings.Split(strings.ToLower(name), ">")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	leaf := parts[len(parts)-1]
+	if leaf == "" {
+		return nil
+	}
+	ancestors := parts[:len(parts)-1]
+	var ranked [3][]*Section
+	for _, s := range d.GetAllSections() {
+		title := strings.ToLower(strings.TrimSpace(s.Title))
+		rank := -1
+		switch {
+		case title == leaf:
+			rank = 0
+		case strings.HasPrefix(title, leaf):
+			rank = 1
+		case strings.Contains(title, leaf):
+			rank = 2
+		}
+		if rank < 0 || !ancestorsMatch(s, ancestors) {
+			continue
+		}
+		ranked[rank] = append(ranked[rank], s)
+	}
+	return append(append(ranked[0], ranked[1]...), ranked[2]...)
+}
+
+// ancestorsMatch reports whether want, outermost first, appears in order
+// among s's ancestor titles.
+func ancestorsMatch(s *Section, want []string) bool {
+	i := len(want) - 1
+	for p := s.Parent; p != nil && i >= 0; p = p.Parent {
+		if strings.Contains(strings.ToLower(p.Title), want[i]) {
+			i--
+		}
+	}
+	return i < 0
+}
+
+// SuggestSections returns up to limit section titles that share a word with
+// name, for "did you mean" output when a lookup finds nothing.
+func (d *Document) SuggestSections(name string, limit int) []string {
+	var words []string
+	for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r > 0x7F)
+	}) {
+		if len(w) >= 3 {
+			words = append(words, w)
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range d.GetAllSections() {
+		if len(out) >= limit {
+			break
+		}
+		title := strings.ToLower(s.Title)
+		for _, w := range words {
+			// A shared word, or a shared four-letter stem ("installing" ~ "install").
+			if strings.Contains(title, w) || (len(w) >= 5 && strings.Contains(title, w[:4])) {
+				if !seen[s.Title] {
+					seen[s.Title] = true
+					out = append(out, s.Title)
+				}
+				break
+			}
+		}
+	}
+	return out
 }
 
 // SourceSpan returns the original source for the inclusive 1-based line
@@ -411,18 +496,6 @@ func (d *Document) cachedSourceLines() []string {
 		d.sourceLines = strings.Split(d.Source, "\n")
 	}
 	return d.sourceLines
-}
-
-func findSection(sections []*Section, name string) *Section {
-	for _, s := range sections {
-		if strings.Contains(strings.ToLower(s.Title), name) {
-			return s
-		}
-		if found := findSection(s.Children, name); found != nil {
-			return found
-		}
-	}
-	return nil
 }
 
 // Summary walks the typed AST once and returns inventory counts for every

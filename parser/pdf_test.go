@@ -297,7 +297,7 @@ func TestAnchorSections(t *testing.T) {
 		}
 	}
 
-	if !anchorSections(doc, text) {
+	if !anchorSections(doc, text, nil, nil) {
 		t.Fatal("anchorSections returned false")
 	}
 
@@ -354,13 +354,13 @@ func TestAnchorSections_FallsBackWhenFewTitlesMatch(t *testing.T) {
 		{Level: 1, Title: "Second Heading Missing"},
 		{Level: 1, Title: "Third Heading Missing Too"},
 	}}
-	if anchorSections(doc, "Only the First Distinctive Heading appears in this scan.") {
+	if anchorSections(doc, "Only the First Distinctive Heading appears in this scan.", nil, nil) {
 		t.Fatal("expected fallback when fewer than half the titles anchor")
 	}
 	if doc.Source != "" || doc.Sections[0].Content != "" || doc.Sections[0].LineStart != 0 {
 		t.Error("fallback must leave the document untouched")
 	}
-	if anchorSections(doc, "") {
+	if anchorSections(doc, "", nil, nil) {
 		t.Error("empty text layer must not anchor")
 	}
 }

@@ -7,12 +7,15 @@ import (
 )
 
 // ParseFile reads path, optionally consults the on-disk mtime parse cache
-// under .docmap/cache, parses, and stores a fresh entry. PDF files are
-// parsed without caching. Set DOCMAP_NO_CACHE=1 to skip the cache entirely.
+// in the user cache dir, parses, and stores a fresh entry. Set
+// DOCMAP_NO_CACHE=1 to skip the cache entirely.
 // Cache I/O errors are ignored.
 func ParseFile(path string) (*Document, error) {
 	lower := strings.ToLower(path)
-	if strings.HasSuffix(lower, ".pdf") {
+	isPDF := strings.HasSuffix(lower, ".pdf")
+	// An external PDF text command changes the result without changing the
+	// file, so its output is never cached.
+	if isPDF && os.Getenv(PDFTextCommandEnv) != "" {
 		return ParsePDF(path)
 	}
 
@@ -29,6 +32,15 @@ func ParseFile(path string) (*Document, error) {
 	size := info.Size()
 
 	if doc, ok := cacheGet(abs, mtimeNS, size); ok {
+		return doc, nil
+	}
+
+	if isPDF {
+		doc, err := ParsePDF(path)
+		if err != nil {
+			return nil, err
+		}
+		cachePut(abs, mtimeNS, size, doc)
 		return doc, nil
 	}
 

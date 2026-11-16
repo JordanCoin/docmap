@@ -521,11 +521,20 @@ type lineWriter struct {
 	size     float64 // font size of the line's body text
 	lastRune rune
 	inScript bool
+
+	gx, gy float64            // device position of the glyph being placed
+	starts map[int][2]float64 // byte offset of each line start -> its (x, y)
 }
 
 func (w *lineWriter) write(s string) {
 	if s == "" {
 		return
+	}
+	if w.b.Len() == 0 || w.lastRune == '\n' {
+		if w.starts == nil {
+			w.starts = map[int][2]float64{}
+		}
+		w.starts[w.b.Len()] = [2]float64{w.gx, w.gy}
 	}
 	w.b.WriteString(s)
 	w.lastRune, _ = utf8.DecodeLastRuneInString(s)
@@ -554,6 +563,7 @@ func (w *lineWriter) glyph(text string, x, y, dx, dy, size, adv float64) {
 	}
 	u := x*dx + y*dy
 	v := -x*dy + y*dx
+	w.gx, w.gy = x, y
 	defer func() { w.endU = u + adv }()
 
 	if !w.started || math.Abs(dx-w.dirX) > 0.01 || math.Abs(dy-w.dirY) > 0.01 {
@@ -628,20 +638,28 @@ func startsNumeric(s string) bool {
 // maxFormDepth bounds recursion into nested form XObjects.
 const maxFormDepth = 4
 
+// pdfPage is the extracted text of one page. ys, when present, holds the
+// baseline y coordinate (default user space, growing upward) of each line of
+// text; it is nil for text that came from an external extractor.
+type pdfPage struct {
+	text string
+	ys   []float64
+}
+
 // pageText extracts the text of one page in content-stream order.
-func pageText(p pdf.Page) (text string) {
+func pageText(p pdf.Page) (page pdfPage) {
 	w := &lineWriter{}
 	defer func() {
 		// A malformed stream keeps the text read before the error.
 		_ = recover()
-		text = tidyPageText(w.b.String())
+		page = tidyPage(w.b.String(), w.starts)
 	}()
 	if p.V.IsNull() {
-		return ""
+		return pdfPage{}
 	}
 	x := &textExtractor{w: w, fonts: map[string]*textFont{}}
 	x.run(p.V.Key("Contents"), p.Resources(), identity, 0)
-	return ""
+	return pdfPage{}
 }
 
 type textExtractor struct {
@@ -812,13 +830,17 @@ func (x *textExtractor) run(strm, resources pdf.Value, ctm mat, depth int) {
 	})
 }
 
-// tidyPageText trims trailing spaces from every line and collapses runs of
-// blank lines, leaving the page's lines otherwise as laid out.
-func tidyPageText(s string) string {
-	lines := strings.Split(s, "\n")
-	out := lines[:0]
+// tidyPage trims trailing spaces from every line and collapses runs of
+// blank lines, leaving the page's lines otherwise as laid out, and carries
+// each kept line's y coordinate along.
+func tidyPage(s string, starts map[int][2]float64) pdfPage {
+	var out []string
+	var ys []float64
 	blank := 0
-	for _, l := range lines {
+	off := 0
+	for _, l := range strings.Split(s, "\n") {
+		pos, ok := starts[off]
+		off += len(l) + 1
 		l = strings.TrimRight(l, " ")
 		if l == "" {
 			blank++
@@ -828,10 +850,16 @@ func tidyPageText(s string) string {
 		} else {
 			blank = 0
 		}
+		y := math.NaN()
+		if ok && l != "" {
+			y = pos[1]
+		}
 		out = append(out, l)
+		ys = append(ys, y)
 	}
 	for len(out) > 0 && out[len(out)-1] == "" {
 		out = out[:len(out)-1]
+		ys = ys[:len(ys)-1]
 	}
-	return strings.Join(out, "\n")
+	return pdfPage{text: strings.Join(out, "\n"), ys: ys}
 }

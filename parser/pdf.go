@@ -3,6 +3,7 @@ package parser
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"sort"
@@ -17,9 +18,9 @@ import (
 // one section per page. Either way doc.Source holds the extracted text and
 // section line numbers index into it, so --expand, --at and --search work.
 func ParsePDF(filepath string) (*Document, error) {
-	f, r, err := pdf.Open(filepath)
+	f, r, err := openPDF(filepath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open PDF: %w", err)
+		return nil, err
 	}
 	defer f.Close()
 
@@ -27,11 +28,17 @@ func ParsePDF(filepath string) (*Document, error) {
 	pages := pdfPageTexts(filepath, r)
 
 	// Try to extract outline (bookmarks) first
-	outline := r.Outline()
-	if hasOutline(outline) {
-		doc.Sections = parseOutline(outline)
-		text := joinPages(pages)
-		if !anchorSections(doc, text) {
+	sections, dests := readOutline(r)
+	if len(sections) == 0 {
+		// Our reader gave up on a malformed outline; take the library's.
+		if outline := r.Outline(); hasOutline(outline) {
+			sections, dests = parseOutline(outline), nil
+		}
+	}
+	if len(sections) > 0 {
+		doc.Sections = sections
+		text, layout := joinPages(pages)
+		if !anchorSections(doc, text, layout, dests) {
 			// Too few titles found in the text layer (scanned PDF, or an
 			// outline that does not match the body): keep the tree, estimate tokens.
 			addPageTokens(doc, text)
@@ -47,6 +54,14 @@ func ParsePDF(filepath string) (*Document, error) {
 	}
 
 	return doc, nil
+}
+
+func openPDF(path string) (*os.File, *pdf.Reader, error) {
+	f, r, err := pdf.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open PDF: %w", err)
+	}
+	return f, r, nil
 }
 
 // PDFTextCommandEnv names an external text extractor. When set, its value is
@@ -65,7 +80,7 @@ const PDFTextCommandEnv = "DOCMAP_PDF_TEXT_CMD"
 var warnExternalOnce sync.Once
 
 // pdfPageTexts returns the text of every page, index 0 being page 1.
-func pdfPageTexts(path string, r *pdf.Reader) []string {
+func pdfPageTexts(path string, r *pdf.Reader) []pdfPage {
 	if cmdline := strings.Fields(os.Getenv(PDFTextCommandEnv)); len(cmdline) > 0 {
 		pages, err := externalPageTexts(cmdline, path)
 		if err == nil {
@@ -75,14 +90,14 @@ func pdfPageTexts(path string, r *pdf.Reader) []string {
 			fmt.Fprintf(os.Stderr, "docmap: %s failed (%v); using the built-in PDF text extractor\n", PDFTextCommandEnv, err)
 		})
 	}
-	pages := make([]string, r.NumPage())
+	pages := make([]pdfPage, r.NumPage())
 	for i := range pages {
 		pages[i] = pageText(r.Page(i + 1))
 	}
 	return pages
 }
 
-func externalPageTexts(cmdline []string, path string) ([]string, error) {
+func externalPageTexts(cmdline []string, path string) ([]pdfPage, error) {
 	args := make([]string, 0, len(cmdline))
 	substituted := false
 	for _, a := range cmdline[1:] {
@@ -100,29 +115,57 @@ func externalPageTexts(cmdline []string, path string) ([]string, error) {
 		return nil, err
 	}
 	text := strings.ToValidUTF8(strings.ReplaceAll(string(out), "\r\n", "\n"), replacement)
-	pages := strings.Split(text, "\f")
-	for i, p := range pages {
-		pages[i] = strings.Trim(p, "\n")
+	parts := strings.Split(text, "\f")
+	if n := len(parts); n > 1 && strings.TrimSpace(parts[n-1]) == "" {
+		parts = parts[:n-1]
 	}
-	if n := len(pages); n > 1 && pages[n-1] == "" {
-		pages = pages[:n-1]
+	pages := make([]pdfPage, len(parts))
+	for i, p := range parts {
+		pages[i] = pdfPage{text: strings.Trim(p, "\n")}
 	}
 	return pages, nil
 }
 
-// joinPages concatenates page texts, one page per line at minimum.
-func joinPages(pages []string) string {
+// pdfLayout describes where the lines of a joined PDF text came from.
+type pdfLayout struct {
+	pageLo    []int     // byte offset where each page's text starts; one extra entry = len(text)
+	lineStart []int     // byte offset of each line
+	lineY     []float64 // baseline y of each line, NaN when unknown
+}
+
+// lineAt returns the index of the line containing byte offset off.
+func (l *pdfLayout) lineAt(off int) int {
+	return sort.Search(len(l.lineStart), func(i int) bool { return l.lineStart[i] > off }) - 1
+}
+
+// pageAt returns the 0-based page containing byte offset off.
+func (l *pdfLayout) pageAt(off int) int {
+	return sort.Search(len(l.pageLo)-1, func(i int) bool { return l.pageLo[i+1] > off })
+}
+
+// joinPages concatenates page texts, one page per line at minimum, and
+// records which bytes and lines belong to which page.
+func joinPages(pages []pdfPage) (string, *pdfLayout) {
 	var b strings.Builder
-	for _, text := range pages {
-		if text == "" {
+	lay := &pdfLayout{}
+	for _, pg := range pages {
+		lay.pageLo = append(lay.pageLo, b.Len())
+		if pg.text == "" {
 			continue
 		}
-		b.WriteString(text)
-		if !strings.HasSuffix(text, "\n") {
+		for i, line := range strings.Split(pg.text, "\n") {
+			lay.lineStart = append(lay.lineStart, b.Len())
+			y := math.NaN()
+			if i < len(pg.ys) {
+				y = pg.ys[i]
+			}
+			lay.lineY = append(lay.lineY, y)
+			b.WriteString(line)
 			b.WriteByte('\n')
 		}
 	}
-	return b.String()
+	lay.pageLo = append(lay.pageLo, b.Len())
+	return b.String(), lay
 }
 
 // hasOutline checks if the PDF has a meaningful outline structure
@@ -283,12 +326,25 @@ func lastMatch(norm []byte, variants [][]byte, lo, hi int) (int, int) {
 func anchorTitles(norm []byte, keys [][]byte) (pos, lens []int) {
 	pos = make([]int, len(keys))
 	lens = make([]int, len(keys))
-	variants := make([][][]byte, len(keys))
-	for i, k := range keys {
+	for i := range pos {
 		pos[i] = -1
-		variants[i] = keyVariants(k)
 	}
+	anchorRemaining(norm, keys, pos, lens)
+	return pos, lens
+}
+
+// anchorRemaining runs the three text-matching passes for every title that
+// pos does not already place (pos[i] < 0), treating the ones it does as
+// fixed points.
+func anchorRemaining(norm []byte, keys [][]byte, pos, lens []int) {
+	variants := make([][][]byte, len(keys))
 	taken := map[int]bool{}
+	for i, k := range keys {
+		variants[i] = keyVariants(k)
+		if pos[i] >= 0 {
+			taken[pos[i]] = true
+		}
+	}
 	place := func(i, at, n int) {
 		pos[i], lens[i] = at, n
 		taken[at] = true
@@ -296,6 +352,14 @@ func anchorTitles(norm []byte, keys [][]byte) (pos, lens []int) {
 
 	cursor := 0
 	for i, k := range keys {
+		if pos[i] >= 0 {
+			// Only move forward: outlines list appendices and figure
+			// captions out of reading order.
+			if pos[i]+lens[i] > cursor {
+				cursor = pos[i] + lens[i]
+			}
+			continue
+		}
 		if len(k) < distinctiveTitleLen {
 			continue
 		}
@@ -346,7 +410,81 @@ func anchorTitles(norm []byte, keys [][]byte) (pos, lens []int) {
 			place(i, at, n)
 		}
 	}
-	return pos, lens
+}
+
+// destTolerance is how far above its destination (in points) a heading's
+// baseline may sit and still be the heading the destination points at.
+const destTolerance = 4
+
+// anchorByDest places titles using the outline's own destinations: each
+// title is searched for only on the page it points to (and the next, since a
+// destination can sit at the very bottom of a page), and when the destination
+// carries a y coordinate the occurrence nearest below it wins. This is what
+// keeps a section off the table-of-contents line, running header or figure
+// label that happens to repeat its title.
+func anchorByDest(text string, norm []byte, idx []int, keys [][]byte, lay *pdfLayout, dests []outlineDest, pos, lens []int) {
+	if lay == nil || len(dests) != len(keys) || len(lay.pageLo) < 2 {
+		return
+	}
+	// normAt maps a raw byte offset to the first normalized byte at or after it.
+	normAt := func(off int) int {
+		return sort.Search(len(idx), func(i int) bool { return idx[i] >= off })
+	}
+	pages := len(lay.pageLo) - 1
+	taken := map[int]bool{}
+	for i, d := range dests {
+		if d.page < 0 || d.page >= pages || len(keys[i]) == 0 {
+			continue
+		}
+		last := d.page + 1
+		if last >= pages {
+			last = pages - 1
+		}
+		lo, hi := normAt(lay.pageLo[d.page]), normAt(lay.pageLo[last+1])
+		best, bestLen, bestCost := -1, 0, math.Inf(1)
+		for _, v := range keyVariants(keys[i]) {
+			for from := lo; from < hi; {
+				j := bytes.Index(norm[from:hi], v)
+				if j < 0 {
+					break
+				}
+				at := from + j
+				from = at + 1
+				if taken[at] {
+					continue
+				}
+				raw := idx[at]
+				line := lay.lineAt(raw)
+				cost := float64(at-lo) / float64(hi-lo+1) // earlier wins a tie
+				if lay.pageAt(raw) != d.page {
+					cost += 5000
+				}
+				// A heading starts its line, give or take a section number.
+				lineStart := lay.lineStart[line]
+				if strings.TrimLeft(text[lineStart:raw], "0123456789. \tABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
+					cost += 300
+				}
+				if y := lay.lineY[line]; d.hasTop && !math.IsNaN(y) {
+					below := d.top - y
+					if below < -destTolerance {
+						cost += 1000 - below // above the destination: almost never the heading
+					} else {
+						cost += below
+					}
+				}
+				if cost < bestCost {
+					best, bestLen, bestCost = at, len(v), cost
+				}
+			}
+			if best >= 0 {
+				break // longest variant found; stripped ones are a fallback
+			}
+		}
+		if best >= 0 {
+			pos[i], lens[i] = best, bestLen
+			taken[best] = true
+		}
+	}
 }
 
 // headingStart backs up from the first matched byte over letters and control
@@ -361,6 +499,14 @@ func headingStart(text string, at int) int {
 			break
 		}
 		at--
+	}
+	// "3.2.1 Scaled Dot-Product Attention": the outline title has no number
+	// but the heading does. Take the number with the heading rather than
+	// leaving it as the last line of the previous section.
+	ls := strings.LastIndexByte(text[:at], '\n') + 1
+	if prefix := text[ls:at]; len(prefix) > 0 && len(prefix) <= 12 &&
+		strings.Trim(prefix, "0123456789. ") == "" && strings.ContainsAny(prefix, "0123456789") {
+		return ls
 	}
 	return at
 }
@@ -391,7 +537,7 @@ func fillParentRange(s *Section) {
 // the next anchored heading in text order, so a parent's own content stops
 // where its first child begins. Returns false, leaving the document
 // untouched, when fewer than half the titles anchor.
-func anchorSections(doc *Document, text string) bool {
+func anchorSections(doc *Document, text string, lay *pdfLayout, dests []outlineDest) bool {
 	flat := doc.GetAllSections()
 	if len(flat) == 0 || text == "" {
 		return false
@@ -402,7 +548,13 @@ func anchorSections(doc *Document, text string) bool {
 	for i, s := range flat {
 		keys[i], _ = normalizeForMatch(s.Title)
 	}
-	pos, lens := anchorTitles(norm, keys)
+	pos := make([]int, len(keys))
+	lens := make([]int, len(keys))
+	for i := range pos {
+		pos[i] = -1
+	}
+	anchorByDest(text, norm, idx, keys, lay, dests, pos, lens)
+	anchorRemaining(norm, keys, pos, lens)
 
 	type span struct {
 		sec        *Section
@@ -498,15 +650,15 @@ func distributeTokens(section *Section, tokens int) {
 // outline. It returns the sections and the source text they index into: page
 // texts joined by a blank line, with each section's LineStart and LineEnd
 // pointing at its page's lines.
-func pageSections(pages []string) ([]*Section, string) {
+func pageSections(pages []pdfPage) ([]*Section, string) {
 	if len(pages) == 0 {
 		return nil, ""
 	}
 	var sections []*Section
 	var src strings.Builder
 	line := 1
-	for i, text := range pages {
-		text = strings.TrimSpace(text)
+	for i, pg := range pages {
+		text := strings.TrimSpace(pg.text)
 		if text == "" {
 			continue
 		}

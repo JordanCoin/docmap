@@ -1,6 +1,9 @@
 package parser
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 // ContainsText reports whether query occurs in text the way a reader would
 // say it does: case-insensitively, with any run of whitespace (including a
@@ -77,4 +80,119 @@ func dehyphenate(s string, keepHyphen bool) string {
 
 func isWordByte(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80
+}
+
+// LineHit is one source line that matches a search query.
+type LineHit struct {
+	Line int    `json:"line"`
+	Text string `json:"text"` // the line, trimmed to a snippet around the match
+}
+
+const (
+	// MaxHitsPerSection is how many matching lines SectionLineHits returns.
+	MaxHitsPerSection = 3
+	snippetWidth      = 110
+)
+
+// SectionLineHits is the line-level matcher behind search: the first few
+// lines of s's own text (not its subsections') that contain query, which
+// must be lowercase, and how many such lines there are in all. A phrase
+// that wraps onto the next line, or a word hyphenated across the break, is
+// reported at the line where it starts. Documents without line-addressable
+// source return nothing.
+func SectionLineHits(doc *Document, s *Section, query string) ([]LineHit, int) {
+	if doc.Source == "" || s.LineStart <= 0 || query == "" {
+		return nil, 0
+	}
+	// Own lines stop where the first subsection starts. YAML and PDF parents
+	// that only span their children have none.
+	end := s.LineEnd
+	for _, c := range s.Children {
+		if c.LineStart > 0 && c.LineStart-1 < end {
+			end = c.LineStart - 1
+		}
+	}
+	if end < s.LineStart {
+		return nil, 0
+	}
+	lines := strings.Split(doc.SourceSpan(s.LineStart, end), "\n")
+	var hits []LineHit
+	count := 0
+	wrapped := false // the previous hit already covered this line's half of a wrapped match
+	for i, line := range lines {
+		at := strings.Index(strings.ToLower(line), query)
+		if at < 0 && !wrapped && i+1 < len(lines) && straddles(line, lines[i+1], query) {
+			// Starts on this line, finishes on the next.
+			at = len(line)
+			wrapped = true
+		} else {
+			wrapped = false
+		}
+		if at < 0 {
+			continue
+		}
+		count++
+		if len(hits) < MaxHitsPerSection {
+			hits = append(hits, LineHit{Line: s.LineStart + i, Text: snippet(line, at)})
+		}
+	}
+	return hits, count
+}
+
+// straddles reports whether query matches across the break between line
+// and next without matching inside either one alone. Only the end of line
+// and the start of next can take part, so only those are compared.
+func straddles(line, next, query string) bool {
+	tail := line
+	if cut := len(tail) - len(query) - 2; cut > 0 {
+		for cut < len(tail) && !utf8.RuneStart(tail[cut]) {
+			cut++
+		}
+		tail = tail[cut:]
+	}
+	head := strings.TrimLeft(next, " \t")
+	if cut := len(query); cut < len(head) {
+		for cut < len(head) && !utf8.RuneStart(head[cut]) {
+			cut++
+		}
+		head = head[:cut]
+	}
+	return ContainsText(tail+"\n"+head, query) && !ContainsText(head, query)
+}
+
+// snippet trims line to about snippetWidth characters around the match at
+// byte offset at, marking cut ends with an ellipsis.
+func snippet(line string, at int) string {
+	line = strings.TrimRight(line, " \t\r")
+	lead := len(line) - len(strings.TrimLeft(line, " \t"))
+	line = line[lead:]
+	at -= lead
+	if at < 0 {
+		at = 0
+	}
+	if at > len(line) {
+		at = len(line)
+	}
+	r := []rune(line)
+	if len(r) <= snippetWidth {
+		return line
+	}
+	pos := len([]rune(line[:at]))
+	start := pos - snippetWidth/3
+	if start < 0 {
+		start = 0
+	}
+	stop := start + snippetWidth
+	if stop > len(r) {
+		stop = len(r)
+		start = stop - snippetWidth
+	}
+	out := string(r[start:stop])
+	if start > 0 {
+		out = "…" + out
+	}
+	if stop < len(r) {
+		out += "…"
+	}
+	return out
 }

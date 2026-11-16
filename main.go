@@ -200,6 +200,12 @@ func main() {
 			}
 			i++
 		default:
+			if a := os.Args[i]; len(a) > 1 && a[0] == '-' {
+				// An unknown flag used to be taken as a second path and
+				// reported as "multiple paths are supported only with --search".
+				fmt.Fprintf(os.Stderr, "Error: unknown flag %s (see docmap --help)\n", a)
+				os.Exit(1)
+			}
 			targets = append(targets, os.Args[i])
 		}
 	}
@@ -365,6 +371,11 @@ func main() {
 			outputMentions(docs, mentionPaths)
 		} else if sinceRef != "" {
 			outputChangedSince(docs, target, sinceRef)
+		} else if atLine > 0 {
+			fmt.Fprintln(os.Stderr, "Error: --at needs a file, not a directory")
+			os.Exit(1)
+		} else if typeFilter != "" {
+			render.TypeFilterDocs(docs, typeFilter, langFilter, kindFilter)
 		} else if expandSection != "" {
 			outputExpand(docs, expandSection)
 		} else if sectionFilter != "" {
@@ -801,7 +812,7 @@ func outputExpand(docs []*parser.Document, name string) {
 		found = true
 	}
 	if !found {
-		fmt.Printf("Section '%s' not found\n", name)
+		render.SectionNotFound(docs, name)
 	}
 }
 
@@ -815,7 +826,7 @@ func outputSection(docs []*parser.Document, name string) {
 		found = true
 	}
 	if !found {
-		fmt.Printf("Section '%s' not found\n", name)
+		render.SectionNotFound(docs, name)
 	}
 }
 
@@ -880,10 +891,13 @@ func readTerms(search, filename string) ([]string, error) {
 }
 
 type searchJSON struct {
-	Term    string `json:"term"`
-	File    string `json:"file"`
-	Section string `json:"section"`
-	Tokens  int    `json:"tokens"`
+	Term    string           `json:"term"`
+	File    string           `json:"file"`
+	Section string           `json:"section"`
+	Tokens  int              `json:"tokens"`
+	Line    int              `json:"line,omitempty"`  // where the section starts
+	Count   int              `json:"count,omitempty"` // matching lines in the section
+	Hits    []render.LineHit `json:"hits,omitempty"`  // first few matching lines
 }
 
 func outputSearch(docs []*parser.Document, terms []string, jsonMode, compact bool) {
@@ -891,7 +905,8 @@ func outputSearch(docs []*parser.Document, terms []string, jsonMode, compact boo
 		var out []searchJSON
 		for _, term := range terms {
 			for _, hit := range render.FindSearchResults(docs, term) {
-				out = append(out, searchJSON{term, hit.Filename, hit.Section.Title, hit.Section.Tokens})
+				out = append(out, searchJSON{term, hit.Filename, hit.Section.Title, hit.Section.Tokens,
+					hit.Section.LineStart, hit.Count, hit.Hits})
 			}
 		}
 		if out == nil {
@@ -901,12 +916,11 @@ func outputSearch(docs []*parser.Document, terms []string, jsonMode, compact boo
 		return
 	}
 	for _, term := range terms {
-		hits := render.FindSearchResults(docs, term)
 		if compact {
 			if len(terms) > 1 {
 				fmt.Printf("## %s\n", term)
 			}
-			for _, hit := range hits {
+			for _, hit := range render.FindSearchResults(docs, term) {
 				file := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(hit.Filename)
 				section := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(hit.Section.Title)
 				fmt.Printf("%s > %s\n", file, section)
@@ -1035,10 +1049,12 @@ Flags:
   --stdin                Read JSON file manifest from stdin (no filesystem access needed)
   --all                  Walk everything: include node_modules, vendor and
                          .gitignore'd files (skipped by default)
-  --search <query>       Search sections across all files
+  --search <query>       Search sections across all files; ranked, with the
+                         matching lines (file > section, then :line text)
   --terms-file <path>     Run one search query per non-comment, non-blank line
   --compact               Search output as one "file > section" line per hit
-  -s, --section <name>   Filter to a specific section
+  -s, --section <name>   Filter to a specific section (best title match;
+                         "Parent > Child" disambiguates)
   --brief                Session-start digest: counts + recent docs (add --stale for count)
   --stale                Flag sections with missing paths/binaries/env keys or old dates
   --days N               With --stale/--brief --stale: status dates older than N days (default 90)
@@ -1048,7 +1064,7 @@ Flags:
   --mentions <path>      Sections that mention a path (repeat or comma-list; stdin OK)
                          With --since and no path, uses git's changed files
   -e, --expand <name>    Show full source of a section (file:L-L, including children)
-  -t, --type <kind>      Drill into one construct: code, callout, table, math,
+  -t, --type <kind>      Drill into one construct (file or directory): code, callout, table, math,
                          footnote, deflist, linkref, html, task, wiki, embed,
                          mention, issue, sha, emoji
   --lang <name>          Sub-filter for --type code (e.g. --type code --lang python)
