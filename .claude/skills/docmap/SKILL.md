@@ -87,11 +87,21 @@ docmap . --search "warning"
 
 Searches section titles and content *plus* the typed AST: code block languages, callout variants, table headers, math TeX, footnote IDs, link labels, HTML content. Much broader than a plain grep.
 
+Each matching section is followed by the lines that matched, ranked best first (title match, then whole-word, then hit count):
+
+```
+docs/HOOKS.md > Codemap Hooks > Why This Matters (93)
+  :436  2. **Sees** the blast radius after making changes
+```
+
+`:436` is the jump target: read that line range directly instead of expanding the whole section. Phrases that wrap across a line break still match. `--compact` gives one `file > section` line per hit; `--json` carries `line`, `count` and `hits`.
+
 ### Focused section view
 
 ```bash
 docmap file.md --section "Installation"    # Just that subtree
 docmap file.md --expand "Installation"      # Raw source of that section (file:L-L)
+docmap file.md --expand "Appendix > Setup"  # Breadcrumb picks between same-named sections
 docmap . --brief                            # Session-start counts + recent docs (skips stale)
 docmap . --brief --stale                    # Brief plus stale claim count
 docmap . --stale                            # Flag stale path/binary/date/env claims

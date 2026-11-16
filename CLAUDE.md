@@ -34,6 +34,7 @@ Every markdown construct is addressable by kind:
 ```bash
 docmap file.md --type code                     # Every code block
 docmap file.md --type code --lang python       # Only Python code blocks
+docmap docs/ --type code --lang bash           # Across a directory
 docmap file.md --type callout                  # Every GFM alert
 docmap file.md --type callout --kind warning   # Only warning callouts
 docmap file.md --type table                    # Every table with headers
@@ -68,6 +69,8 @@ docmap file.md --search "python"        # Matches titles, content, code language
 ```
 
 `--search` is broader than a simple grep — it searches through the typed AST so "python" matches code block languages, "warning" matches callout variants, etc.
+
+Results are ranked and show the matching lines under each section (`  :436  …text…`), so read that line range directly rather than expanding the section. `--expand "Parent > Child"` picks between sections that share a title.
 
 ## Reading the output
 

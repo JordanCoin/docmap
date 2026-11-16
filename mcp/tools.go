@@ -312,12 +312,20 @@ func handleSearch(_ context.Context, _ *mcpsdk.CallToolRequest, in searchInput) 
 	var hits []map[string]any
 	for _, doc := range ld.Docs {
 		for _, sec := range doc.GetAllSections() {
-			if sectionMatches(sec, needle) {
-				hits = append(hits, map[string]any{
+			lineHits, count := parser.SectionLineHits(doc, sec, needle)
+			if count > 0 || sectionMatches(sec, needle) {
+				hit := map[string]any{
 					"filename": doc.Filename, "section": sectionBreadcrumb(sec),
 					"title": sec.Title, "tokens": sec.Tokens,
 					"lines": []int{sec.LineStart, sec.LineEnd},
-				})
+				}
+				if count > 0 {
+					// The matching lines themselves, so the caller can go
+					// straight to file:line instead of expanding the section.
+					hit["match_count"] = count
+					hit["matches"] = lineHits
+				}
+				hits = append(hits, hit)
 			}
 		}
 	}

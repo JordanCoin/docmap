@@ -119,6 +119,30 @@ func TestSearchCLI(t *testing.T) {
 	if got := run(a, "--search", "missing", "--json"); strings.TrimSpace(got) != "[]" {
 		t.Fatalf("no-hit json = %q", got)
 	}
+	if rows[0]["line"] != float64(1) || rows[0]["count"] != float64(1) {
+		t.Fatalf("json should carry the section line and hit count: %#v", rows[0])
+	}
+	hits, _ := rows[0]["hits"].([]interface{})
+	if len(hits) != 1 || hits[0].(map[string]interface{})["line"] != float64(2) {
+		t.Fatalf("json hits = %#v", rows[0]["hits"])
+	}
+	fail := func(args ...string) string {
+		out, err := exec.Command(bin, args...).CombinedOutput()
+		if err == nil {
+			t.Fatalf("%v should fail, got:\n%s", args, out)
+		}
+		return string(out)
+	}
+	if out := fail(a, "--serach", "hello"); !strings.Contains(out, "unknown flag --serach") {
+		t.Fatalf("unknown flag message = %q", out)
+	}
+	if out := fail(a, "--at", "3"); !strings.Contains(out, "--at needs a file") {
+		t.Fatalf("--at on a directory = %q", out)
+	}
+	os.WriteFile(filepath.Join(a, "code.md"), []byte("# C\n\n```sh\nmake build\n```\n"), 0644)
+	if out := run(a, "--type", "code"); !strings.Contains(out, "make build") || !strings.Contains(out, "1 code block in 1 of 2 files") {
+		t.Fatalf("directory --type = %q", out)
+	}
 	manifest := `{"root":"stdin","files":[{"path":"x.md","content":"# Stdin\nhello"}]}`
 	cmd := exec.Command(bin, "--stdin", "--search", "hello", "--json")
 	cmd.Stdin = strings.NewReader(manifest)

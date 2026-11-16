@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-const cacheVersion = 3 // 3: .txt parsed as plain text, not markdown (#32)
+const cacheVersion = 4 // 4: PDFs cached; PDF text extracted by position
 
 // cachePayload is the on-disk gob form under the user cache dir.
 // Keyed by absolute path; validated against mtime (unix nano) + size.
