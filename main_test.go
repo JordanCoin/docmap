@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -183,7 +184,7 @@ func TestOutputBriefCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	outputBrief(docs, dir, 0, false)
+	outputBrief(docs, dir, 0, false, false)
 	w.Close()
 	os.Stdout = old
 	buf := make([]byte, 4096)
@@ -211,7 +212,7 @@ func TestOutputBriefWithStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Stdout = w
-	outputBrief(docs, dir, 0, true)
+	outputBrief(docs, dir, 0, true, false)
 	w.Close()
 	os.Stdout = old
 	buf := make([]byte, 4096)
@@ -259,5 +260,38 @@ func TestSmallDocLines(t *testing.T) {
 	}
 	if n := smallDocLines("a.yaml", &parser.Document{Source: small}); n != 0 {
 		t.Fatalf("yaml never short-circuits, got %d", n)
+	}
+}
+
+// #31: --brief must report the same totals as the full listing, YAML included.
+func TestOutputBriefCountsYAML(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.md"), "# Doc A\n\nSome text.\n")
+	writeFile(t, filepath.Join(dir, "b.md"), "# Doc B\n\n## Section\n\ntext\n")
+	writeFile(t, filepath.Join(dir, "c.yaml"), "name: thing\nid: 1\ntitle: hi\n")
+	writeFile(t, filepath.Join(dir, "d.yml"), "name: other\n")
+	docs := docset.LoadDir(dir, false)
+
+	wantSections, wantTokens := 0, 0
+	for _, d := range docs {
+		wantSections += len(d.GetAllSections())
+		wantTokens += d.TotalTokens
+	}
+	out := captureStdout(func() { outputBrief(docs, dir, 0, false, false) })
+	first := strings.SplitN(out, "\n", 2)[0]
+	want := fmt.Sprintf("4 files (2 md, 2 yaml) · %d sections · ~%d tokens", wantSections, wantTokens)
+	if first != want {
+		t.Fatalf("brief line = %q, want %q", first, want)
+	}
+	if strings.Contains(out, "c.yaml") || strings.Contains(out, "d.yml") {
+		t.Fatalf("recent docs should prefer documentation over YAML, got %q", out)
+	}
+
+	// A YAML-only tree still names its files.
+	ydir := t.TempDir()
+	writeFile(t, filepath.Join(ydir, "only.yaml"), "name: x\n")
+	out = captureStdout(func() { outputBrief(docset.LoadDir(ydir, false), ydir, 0, false, false) })
+	if !strings.Contains(out, "1 files (1 yaml)") || !strings.Contains(out, "recent docs: only.yaml") {
+		t.Fatalf("yaml-only brief, got %q", out)
 	}
 }

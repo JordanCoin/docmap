@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -207,4 +208,46 @@ func RecentByMtime(docs []*parser.Document, root string, limit int) []string {
 		out[i] = r.name
 	}
 	return out
+}
+
+// IsYAML reports whether name has a YAML extension.
+func IsYAML(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml")
+}
+
+// WithoutYAML returns docs minus YAML files, preserving order.
+func WithoutYAML(docs []*parser.Document) []*parser.Document {
+	var out []*parser.Document
+	for _, d := range docs {
+		if !IsYAML(d.Filename) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// KindBreakdown renders per-format counts for a doc set, e.g.
+// "2 md, 1 pdf, 2 yaml". Formats with no files are omitted.
+func KindBreakdown(docs []*parser.Document) string {
+	order := []string{"md", "pdf", "yaml", "txt"}
+	counts := map[string]int{}
+	for _, d := range docs {
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(d.Filename)), ".")
+		switch ext {
+		case "yml":
+			ext = "yaml"
+		case "md", "pdf", "yaml", "txt":
+		default:
+			ext = "md" // anything else was parsed as markdown
+		}
+		counts[ext]++
+	}
+	var parts []string
+	for _, k := range order {
+		if counts[k] > 0 {
+			parts = append(parts, strconv.Itoa(counts[k])+" "+k)
+		}
+	}
+	return strings.Join(parts, ", ")
 }

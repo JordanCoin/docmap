@@ -336,7 +336,7 @@ func main() {
 	if info.IsDir() {
 		// Multi-file mode: find all .md files
 		var docs []*parser.Document
-		if brief || staleMode || mentionsFlag {
+		if (staleMode && !brief) || mentionsFlag {
 			docs = docset.LoadDocs(target, walkAll)
 		} else {
 			docs = docset.LoadDir(target, walkAll)
@@ -348,7 +348,7 @@ func main() {
 		if len(terms) > 0 {
 			outputSearch(docs, terms, jsonMode, compact)
 		} else if brief {
-			outputBrief(docs, target, staleDays, staleMode)
+			outputBrief(docs, target, staleDays, staleMode, walkAll)
 		} else if staleMode {
 			outputStale(docs, target, staleDays, checkFlags, staleRemote, allowDomains, jsonMode)
 		} else if sinceRef != "" && jsonMode {
@@ -382,7 +382,7 @@ func main() {
 		if len(terms) > 0 {
 			outputSearch([]*parser.Document{doc}, terms, jsonMode, compact)
 		} else if brief {
-			outputBrief([]*parser.Document{doc}, filepath.Dir(target), staleDays, staleMode)
+			outputBrief([]*parser.Document{doc}, filepath.Dir(target), staleDays, staleMode, true)
 		} else if staleMode {
 			outputStale([]*parser.Document{doc}, filepath.Dir(target), staleDays, checkFlags, staleRemote, allowDomains, jsonMode)
 		} else if sinceRef != "" && jsonMode {
@@ -524,24 +524,28 @@ func mentionPathsFromGit(root, ref string) []string {
 	return out
 }
 
-func outputBrief(docs []*parser.Document, root string, days int, runStale bool) {
+// outputBrief prints the session-start digest. docs is everything the full
+// listing parses, so the totals agree with `docmap <dir>` (#31). "recent docs"
+// and the stale count still describe documentation only: YAML under a tree is
+// config and fixtures, and `docmap <dir> --stale` skips it the same way unless
+// yamlIsDoc (--all, or an explicit file) says otherwise.
+func outputBrief(docs []*parser.Document, root string, days int, runStale, yamlIsDoc bool) {
 	totalSections := 0
 	totalTokens := 0
-	md := 0
 	for _, d := range docs {
 		totalTokens += d.TotalTokens
 		totalSections += len(d.GetAllSections())
-		if strings.HasSuffix(strings.ToLower(d.Filename), ".md") {
-			md++
+	}
+	fmt.Printf("%d files (%s) · %d sections · ~%s tokens\n",
+		len(docs), docset.KindBreakdown(docs), totalSections, briefTokens(totalTokens))
+
+	prose := docs
+	if !yamlIsDoc {
+		if p := docset.WithoutYAML(docs); len(p) > 0 {
+			prose = p
 		}
 	}
-	fmt.Printf("%d files (%d md) · %d sections · ~%s tokens\n",
-		len(docs), md, totalSections, briefTokens(totalTokens))
-
-	recent := recentDocs(root, docs, 5)
-	if len(recent) == 0 {
-		recent = docset.RecentByMtime(docs, root, 5)
-	}
+	recent := recentDocs(root, prose, 5)
 	if len(recent) > 0 {
 		fmt.Printf("recent docs: %s\n", strings.Join(recent, ", "))
 	}
@@ -549,7 +553,7 @@ func outputBrief(docs []*parser.Document, root string, days int, runStale bool) 
 		fmt.Println("stale: run with --brief --stale")
 		return
 	}
-	findings := stale.Check(docs, stale.Options{Root: root, Days: days})
+	findings := stale.Check(prose, stale.Options{Root: root, Days: days})
 	if len(findings) == 0 {
 		fmt.Println("stale: none")
 	} else {
